@@ -1,0 +1,73 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.Python
+*.egg-info/
+dist/
+build/
+.eggs/
+
+# Virtual environments
+venv/
+venv310/
+env/
+ENV/
+
+# Testing
+.pytest_cache/
+.coverage
+htmlcov/
+
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Claude Code session data
+.claude/
+
+# Node
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# Vite / React build
+frontend/dist/
+frontend/.vite/
+
+# Generated data (large, regeneratable)
+# Exception: india_wdn_*.json are small pre-fetched city-graph caches committed
+# so a deployed instance never depends on a live OSM/Overpass fetch on first use.
+backend/data/generated/*
+!backend/data/generated/india_wdn_*.json
+
+# Training scenario pickle files (regenerate with dataset_generator.py)
+*.pkl
+
+# Raw zip archives
+*.zip
+
+# Trained model checkpoints are committed (364 KB each — small enough to include)
+
+# Cache directory
+cache/
+
+# Logs
+*.log
+nohup.out
+/tmp/
+
+# Secrets / environment files
+.env
+.env.local
+.env.*.local
+secrets.json

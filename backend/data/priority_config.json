@@ -1,0 +1,41 @@
+{
+  "Net3": {
+    "hospital_nodes": ["10", "101"],
+    "fire_station_nodes": ["103"],
+    "school_nodes": ["105", "107"],
+    "default_type": "residential",
+    "weights": {
+      "hospital": 5.0,
+      "fire_station": 4.0,
+      "school": 3.0,
+      "residential": 1.0,
+      "park": 0.5
+    }
+  },
+  "Hanoi": {
+    "hospital_nodes": ["10", "11"],
+    "fire_station_nodes": ["12"],
+    "school_nodes": ["13", "14"],
+    "default_type": "residential",
+    "weights": {
+      "hospital": 5.0,
+      "fire_station": 4.0,
+      "school": 3.0,
+      "residential": 1.0,
+      "park": 0.5
+    }
+  },
+  "L-Town": {
+    "hospital_nodes": ["n1", "n54"],
+    "fire_station_nodes": ["n23"],
+    "school_nodes": ["n101", "n205"],
+    "default_type": "residential",
+    "weights": {
+      "hospital": 5.0,
+      "fire_station": 4.0,
+      "school": 3.0,
+      "residential": 1.0,
+      "park": 0.5
+    }
+  }
+}

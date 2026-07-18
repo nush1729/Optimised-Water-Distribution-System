@@ -1,0 +1,178 @@
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500&display=swap');
+
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+html, body, #root { height: 100%; overflow: hidden; }
+
+/* ══════════════════════════════════════════════
+   LIGHT THEME  —  Water Infrastructure Palette
+   ══════════════════════════════════════════════ */
+:root {
+  --font:   'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+  --mono:   'JetBrains Mono', 'Fira Code', monospace;
+
+  /* Backgrounds */
+  --bg:         #f0f6ff;
+  --surface:    #ffffff;
+  --surface-2:  #f5f9ff;
+  --surface-3:  #eaf2ff;
+  --glass:      rgba(255,255,255,0.72);
+  --glass-border: rgba(14,116,144,0.12);
+
+  /* Borders */
+  --border:     #d1e3f5;
+  --border-2:   #e8f0fa;
+  --border-focus: #0891b2;
+
+  /* Text */
+  --text:       #0c1824;
+  --text-2:     #3d5a73;
+  --text-3:     #7a9ab5;
+  --text-inv:   #ffffff;
+
+  /* Brand — Cyan/Teal water */
+  --cyan:       #0891b2;
+  --cyan-light: #e0f2fe;
+  --cyan-dim:   rgba(8,145,178,0.12);
+  --cyan-glow:  rgba(8,145,178,0.25);
+  --teal:       #0d9488;
+  --teal-light: #ccfbf1;
+
+  /* Status */
+  --green:      #059669;
+  --green-light:#d1fae5;
+  --red:        #dc2626;
+  --red-light:  #fee2e2;
+  --amber:      #d97706;
+  --amber-light:#fef3c7;
+  --orange:     #ea580c;
+  --orange-light:#ffedd5;
+  --purple:     #7c3aed;
+  --purple-light:#ede9fe;
+
+  /* Elevation */
+  --shadow-xs:  0 1px 2px rgba(12,24,36,0.06);
+  --shadow-sm:  0 2px 6px rgba(12,24,36,0.08);
+  --shadow:     0 4px 16px rgba(12,24,36,0.10);
+  --shadow-lg:  0 12px 40px rgba(12,24,36,0.14);
+  --shadow-xl:  0 24px 64px rgba(12,24,36,0.18);
+  --shadow-cyan: 0 0 20px rgba(8,145,178,0.25);
+
+  /* Radius */
+  --r-sm: 6px;
+  --r:    8px;
+  --r-lg: 12px;
+  --r-xl: 16px;
+  --r-2xl:24px;
+
+  /* Transition */
+  --ease: cubic-bezier(0.4, 0, 0.2, 1);
+  --t-fast: 120ms var(--ease);
+  --t:      200ms var(--ease);
+  --t-slow: 350ms var(--ease);
+}
+
+/* ══════════════════════════════════════════════
+   DARK THEME  —  Deep Ocean / Night Mode
+   ══════════════════════════════════════════════ */
+[data-theme="dark"] {
+  --bg:         #04111e;
+  --surface:    #071828;
+  --surface-2:  #0a1f30;
+  --surface-3:  #0d2640;
+  --glass:      rgba(7,24,40,0.85);
+  --glass-border: rgba(56,189,248,0.15);
+
+  --border:     #1a3347;
+  --border-2:   #112233;
+  --border-focus: #38bdf8;
+
+  --text:       #e2eeff;
+  --text-2:     #7ab3d4;
+  --text-3:     #3a6482;
+  --text-inv:   #04111e;
+
+  --cyan:       #38bdf8;
+  --cyan-light: rgba(56,189,248,0.12);
+  --cyan-dim:   rgba(56,189,248,0.08);
+  --cyan-glow:  rgba(56,189,248,0.35);
+  --teal:       #2dd4bf;
+  --teal-light: rgba(45,212,191,0.12);
+
+  --green:      #34d399;
+  --green-light:rgba(52,211,153,0.12);
+  --red:        #f87171;
+  --red-light:  rgba(248,113,113,0.12);
+  --amber:      #fbbf24;
+  --amber-light:rgba(251,191,36,0.12);
+  --orange:     #fb923c;
+  --orange-light:rgba(251,146,60,0.12);
+  --purple:     #a78bfa;
+  --purple-light:rgba(167,139,250,0.12);
+
+  --shadow-xs:  0 1px 2px rgba(0,0,0,0.3);
+  --shadow-sm:  0 2px 6px rgba(0,0,0,0.4);
+  --shadow:     0 4px 16px rgba(0,0,0,0.5);
+  --shadow-lg:  0 12px 40px rgba(0,0,0,0.6);
+  --shadow-xl:  0 24px 64px rgba(0,0,0,0.7);
+  --shadow-cyan: 0 0 24px rgba(56,189,248,0.3);
+}
+
+/* ══════════════════════════════════════════════
+   BASE
+   ══════════════════════════════════════════════ */
+body {
+  font-family: var(--font);
+  font-size: 14px;
+  color: var(--text);
+  background: var(--bg);
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  transition: background var(--t-slow), color var(--t-slow);
+}
+
+a { color: var(--cyan); text-decoration: none; transition: opacity var(--t-fast); }
+a:hover { opacity: 0.8; }
+
+button { font-family: var(--font); cursor: pointer; }
+input, select, textarea { font-family: var(--font); }
+
+/* Scrollbar */
+::-webkit-scrollbar { width: 4px; height: 4px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: var(--border); border-radius: 2px; }
+::-webkit-scrollbar-thumb:hover { background: var(--cyan); }
+
+/* Leaflet */
+.leaflet-container {
+  background: #d4e8f5;
+  font-family: var(--font) !important;
+}
+[data-theme="dark"] .leaflet-container { background: #0a1828; }
+.leaflet-tooltip {
+  background: var(--surface) !important;
+  border: 1px solid var(--border) !important;
+  border-radius: var(--r) !important;
+  color: var(--text) !important;
+  box-shadow: var(--shadow) !important;
+  padding: 8px 10px !important;
+  font-family: var(--font) !important;
+  font-size: 12px !important;
+}
+.leaflet-tooltip::before { display: none !important; }
+
+/* Keyframes */
+@keyframes spin { to { transform: rotate(360deg); } }
+@keyframes fadeIn { from { opacity:0; transform:translateY(6px); } to { opacity:1; transform:translateY(0); } }
+@keyframes pulse-ring {
+  0%   { transform: scale(0.9); opacity: 0.8; }
+  50%  { transform: scale(1.05); opacity: 0.4; }
+  100% { transform: scale(0.9); opacity: 0.8; }
+}
+@keyframes shimmer {
+  0%   { background-position: -200% 0; }
+  100% { background-position: 200% 0; }
+}
+@keyframes glow {
+  0%, 100% { box-shadow: 0 0 8px var(--cyan-glow); }
+  50%       { box-shadow: 0 0 20px var(--cyan-glow), 0 0 40px var(--cyan-dim); }
+}

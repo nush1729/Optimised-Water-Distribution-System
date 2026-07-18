@@ -1,0 +1,19 @@
+wntr>=1.5.0
+networkx
+# torch>=2.1.2 wheels are built against numpy<2's C ABI and crash at import
+# time ("A module that was compiled using NumPy 1.x cannot be run in NumPy
+# 2.x") once wntr>=1.5.0 pulls in numpy>=2.2.6. torch>=2.3 supports numpy 2.
+torch>=2.3
+torch_geometric>=2.5.0
+numpy>=2.2.6
+pandas
+scipy
+scikit-learn
+matplotlib
+seaborn
+fastapi
+uvicorn
+pytest
+httpx
+osmnx
+geopy
