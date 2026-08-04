@@ -12,7 +12,7 @@ import time
 
 from fastapi import BackgroundTasks, FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse, StreamingResponse
+from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
@@ -936,6 +936,21 @@ def india_report_status():
     if _report_status["state"] == "done" and os.path.exists(FIGURES_DIR):
         figs = sorted(f for f in os.listdir(FIGURES_DIR) if f.startswith("india_") and f.endswith(".png"))
     return {**_report_status, "figures": figs}
+
+
+# Serve built React frontend (production). Must be registered AFTER all API
+# routes so the SPA catch-all doesn't shadow them.
+_FRONTEND_DIST = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "frontend", "dist")
+if os.path.isdir(_FRONTEND_DIST):
+    app.mount(
+        "/assets",
+        StaticFiles(directory=os.path.join(_FRONTEND_DIST, "assets")),
+        name="frontend-assets",
+    )
+
+    @app.get("/{full_path:path}", include_in_schema=False)
+    async def serve_spa(full_path: str):  # noqa: ARG001
+        return FileResponse(os.path.join(_FRONTEND_DIST, "index.html"))
 
 
 if __name__ == "__main__":

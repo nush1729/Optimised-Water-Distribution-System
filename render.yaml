@@ -1,0 +1,15 @@
+services:
+  - type: web
+    name: harp-wdn
+    runtime: python
+    plan: free
+    buildCommand: >-
+      pip install --upgrade pip &&
+      pip install -r requirements-deploy.txt &&
+      cd frontend && npm install && npm run build
+    startCommand: uvicorn backend.main:app --host 0.0.0.0 --port $PORT
+    envVars:
+      - key: PYTHON_VERSION
+        value: "3.11"
+      - key: ALLOWED_ORIGINS
+        value: ""

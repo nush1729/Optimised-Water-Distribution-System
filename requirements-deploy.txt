@@ -1,0 +1,20 @@
+# CPU-only PyTorch wheels (much smaller than CUDA builds; suitable for Render free tier)
+--extra-index-url https://download.pytorch.org/whl/cpu
+torch>=2.3
+torch_geometric>=2.5.0
+# Core hydraulics / graph
+wntr>=1.5.0
+networkx
+numpy>=2.2.6
+pandas
+scipy
+scikit-learn
+# API
+fastapi
+uvicorn[standard]
+# Geo / city data
+osmnx
+geopy
+# Plotting (used for report generation)
+matplotlib
+seaborn

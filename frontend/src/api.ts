@@ -1,10 +1,10 @@
 import axios from "axios";
 import type { WDNData, WDNNode, WDNEdge } from "./cityData";
 
-// VITE_API_BASE_URL is set at build time (see .env.production / Render's
-// environment settings) so the deployed frontend talks to the deployed
-// backend instead of localhost. Falls back to localhost for `npm run dev`.
-const BASE = import.meta.env.VITE_API_BASE_URL || "http://localhost:8000";
+// In production the frontend is served by the same FastAPI process, so use
+// relative URLs (empty string). In dev, proxy to the local backend.
+// Set VITE_API_BASE_URL to override (e.g. a separate backend deployment).
+const BASE = import.meta.env.VITE_API_BASE_URL ?? (import.meta.env.PROD ? "" : "http://localhost:8000");
 const api = axios.create({ baseURL: BASE });
 
 // ── Health check ───────────────────────────────────────────────────────────
