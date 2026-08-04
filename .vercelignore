@@ -1,0 +1,9 @@
+backend/
+requirements.txt
+requirements-deploy.txt
+render.yaml
+algorithms/
+anomaly/
+docs/
+idea.md
+design.md
