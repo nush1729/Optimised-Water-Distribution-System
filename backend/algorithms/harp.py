@@ -19,6 +19,7 @@ from backend.config import (
     DEFAULT_PIPE_LENGTH_M,
     DEFAULT_PIPE_ROUGHNESS,
     MIN_SINK_CAP_M3S,
+    PDA_PRESSURE_EXPONENT,
     SOURCE_SUPPLY_CAP_M3S,
     ESCALATION_THRESHOLD,
     GAT_Q_ESTIMATE_M3S,
@@ -154,7 +155,7 @@ class HARP:
         ignored. Returns (feasible, margin_m, service_fraction), where
         service_fraction in [0, 1] is the pressure-dependent share of demand
         the sink can receive (0 at MIN_PRESSURE_M, 1 at REQUIRED_PRESSURE_M —
-        the same pressure-dependent-demand convention WNTR uses).
+        the same pressure-dependent-demand law WNTR uses, exponent 0.5).
         """
         real_path = [n for n in path if not n.startswith("__SUPER")]
         if len(real_path) < 2:
@@ -188,8 +189,9 @@ class HARP:
         predicted_sink_pressure = heads.get(sink, 0.0) - elev_sink
         pressure_eff = min(residual_pressure, predicted_sink_pressure)
         margin = pressure_eff - MIN_PRESSURE_M - self.safety_margin_m
-        fraction = (pressure_eff - MIN_PRESSURE_M) / (REQUIRED_PRESSURE_M - MIN_PRESSURE_M)
-        return margin >= 0, margin, max(0.0, min(1.0, fraction))
+        band = (pressure_eff - MIN_PRESSURE_M) / (REQUIRED_PRESSURE_M - MIN_PRESSURE_M)
+        fraction = max(0.0, min(1.0, band)) ** PDA_PRESSURE_EXPONENT
+        return margin >= 0, margin, fraction
 
     @staticmethod
     def _retire_sink(G_residual: nx.DiGraph, sink: str, supersink: str) -> None:

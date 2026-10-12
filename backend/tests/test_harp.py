@@ -334,10 +334,20 @@ def test_low_pressure_sink_is_rejected_not_silently_served():
 
 
 def test_partial_pressure_gives_partial_service():
-    """Between min and required pressure, delivery is pressure-dependent."""
-    wn, press = _line_network({'hospital': 10.6})  # ~50% of the 7.03-14.06 m band
+    """Between min and required pressure, delivery follows WNTR's pressure-demand law
+    (square root): 10.6 m is 51% of the 7.03-14.06 m band, so ~71% of demand."""
+    wn, press = _line_network({'hospital': 10.6})
     result = HARP().run(wn, 'p_fail', press, _PC, k=0, use_subgraph=False)
-    assert 0.4 < result.demand_satisfaction['hospital'] < 0.6
+    assert 0.65 < result.demand_satisfaction['hospital'] < 0.78
+
+
+def test_service_fraction_law_matches_the_simulators_own_default():
+    """If WNTR's exponent ever changes, HARP's promise and the simulator's delivery diverge."""
+    from backend.config import PDA_PRESSURE_EXPONENT, MIN_PRESSURE_M, REQUIRED_PRESSURE_M
+    from backend.wntr_engine import load_network
+    h = load_network("Net3").options.hydraulic
+    assert h.pressure_exponent == PDA_PRESSURE_EXPONENT
+    assert h.minimum_pressure == pytest.approx(MIN_PRESSURE_M) and h.required_pressure == pytest.approx(REQUIRED_PRESSURE_M)
 
 
 def test_unservable_near_sink_does_not_block_farther_sinks():

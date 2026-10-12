@@ -64,6 +64,14 @@ NODE_TYPE_WEIGHTS = {
 # Kept for backwards compatibility with older imports.
 PRIORITY_WEIGHTS = NODE_TYPE_WEIGHTS
 
+# Pressure-dependent demand: a node at pressure P receives
+#   ((P - MIN_PRESSURE_M) / (REQUIRED_PRESSURE_M - MIN_PRESSURE_M)) ** PDA_PRESSURE_EXPONENT
+# of its demand. 0.5 is WNTR's own default (a test asserts they match); HARP's service
+# fraction must use the same law as the simulator that judges it, otherwise it
+# systematically under-serves (a linear fraction served 0.71 where WNTR serves 1.0 at
+# the mid-band pressure).
+PDA_PRESSURE_EXPONENT = 0.5
+
 # Hour of the 24 h extended-period simulation used as the evaluation snapshot.
 SNAPSHOT_HOUR = 12
 
