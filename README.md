@@ -151,7 +151,7 @@ Below full pressure a sink gets only its service fraction of demand. The previou
 | Node inputs | 8 (elevation or source head, demand, is-source, 4 priority flags, proximity to failure); **10** with demand ratio and load factor |
 | Edge inputs | 6 (log length, diameter, roughness ×2, open/closed, log resistance) |
 | Layers | GATConv 64×4 → LayerNorm → ReLU → dropout; GATConv 64×4 (same); GATConv 32×2 → ReLU; Linear → pressure |
-| Parameters | ~180 000 |
+| Parameters | ~91 000 (91 329 with the 10 node inputs; 90 817 with 8) |
 | Loss | MSE + Hazen-Williams flow-balance regulariser |
 | Target | absolute pressure, or the change from the intact network (`--residual`) |
 | Uncertainty | MC-Dropout (20 passes) |
@@ -292,7 +292,8 @@ Output locations can be redirected with `HARP_GENERATED_DIR`, `HARP_MODELS_DIR`,
 |---|---|---|
 | GET | `/health` | Liveness |
 | GET | `/config/priorities` | Authoritative node-type priority weights |
-| GET | `/networks`, `/networks/{n}/graph`, `/networks/{n}/pipes` | Benchmark networks |
+| GET | `/networks`, `/networks/{n}/info`, `/networks/{n}/graph`, `/networks/{n}/pipes` | Benchmark networks |
+| GET | `/india/cities`, `/geo/cities`, `/geo/city/{name}` | City lists and OSM-derived city graphs |
 | POST | `/simulate/scenario` | Single-pipe failure; method `none` / `dinic` / `harp`; returns a recovery plan and MC-Dropout uncertainty for `harp` |
 | POST | `/simulate/leak`, `/simulate/surge`, `/simulate/multi_failure` | Other WNTR scenarios |
 | POST | `/anomaly/detect` | Simulate a failure and detect it |

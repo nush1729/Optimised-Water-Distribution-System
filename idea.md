@@ -1,5 +1,15 @@
 # HARP-WDN: Hydraulics-Aware Resilient Prioritization for Water Distribution Networks
 
+> **Superseded numbers.** This document describes earlier versions of the system. Several figures in it were
+> measured on code that has since been fixed and must not be quoted: **90.7% demand satisfaction** and
+> **~117 ms vs ~28 ms** (taken from the India demo when HARP read an invented distance-gradient pressure field;
+> it now reads a real WNTR solve), **Net3 CDS 39.2%** (a hydraulic-gate bug: the gate demanded a head drop out of every
+> source and delivered nothing), **L-Town MAE 18.45 m** (an old model; also, valves and pumps were missing from the flow
+> graph), **~180K GAT parameters** (it is ~91K), **Kruskal's MST** (the generator uses **Prim's**), and any
+> "500 scenarios" / "6 experiments" counts (there are 7 experiments). WNTR demand noise in the training data was also never
+> applied. **The README and `backend/results/` hold the current, reproducible results.**
+
+
 ## Project Identity
 
 **Full Title:** HARP-WDN: A Co-Simulation Framework Coupling Graph Attention Network Pressure Surrogates with Hydraulically-Constrained, Priority-Weighted Flow Rerouting for Resilient Urban Water Distribution
@@ -94,7 +104,7 @@ HARP-WDN is a co-simulation research prototype with two integrated layers:
 ### Layer 1: India WDN Simulation (Frontend-visible, interactive)
 
 A generative India city water distribution network system covering 10 cities (Bengaluru, Delhi, Mumbai, Hyderabad, Chennai, Pune, Kolkata, Jaipur, Ahmedabad, Lucknow). Each city generates a synthetic WDN with:
-- Deterministic Kruskal MST backbone + probabilistic redundant edges (seeded PRNG)
+- Deterministic Prim's MST backbone + probabilistic redundant edges (seeded PRNG)
 - Priority-typed nodes: hospital (w=5), fire station (w=4), school (w=3), college (w=3), market (w=2), residential (w=1)
 - Pipe classes: main (40cm), secondary (25cm), local (15cm), branch (10cm)
 - Hazen-Williams hydraulic parameters per pipe class (C_hw 100–130)
@@ -119,7 +129,7 @@ Six structured experiments on EPA benchmark networks (Net3: 97 nodes, L-Town: 78
 
 ---
 
-## 6. Actual Experimental Results
+## 6. Historical Experimental Results (superseded: see the notice at the top and the README)
 
 ### India WDN Results (verified on 4 cities — Bengaluru, Delhi, Mumbai, Hyderabad — burst scenario)
 

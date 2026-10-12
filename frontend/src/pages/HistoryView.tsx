@@ -48,7 +48,8 @@ export default function HistoryView() {
             <div style={{ padding: 16 }}>No runs recorded yet. Run a simulation and it will appear here.</div>
           )}
           {runs.length > 0 && (
-            <table className="data-table">
+            <div style={{ overflowX: 'auto' }}>
+            <table className="data-table" style={{ minWidth: 900 }}>
               <thead>
                 <tr>
                   <th>#</th><th>When</th><th>Kind</th><th>Network</th><th>Method</th><th>Scenario</th>
@@ -75,6 +76,7 @@ export default function HistoryView() {
                 ))}
               </tbody>
             </table>
+            </div>
           )}
         </div>
       </div>

@@ -1,8 +1,18 @@
 # HARP-WDN: Complete System Design Document
 
+> **Superseded numbers.** This document describes earlier versions of the system. Several figures in it were
+> measured on code that has since been fixed and must not be quoted: **90.7% demand satisfaction** and
+> **~117 ms vs ~28 ms** (taken from the India demo when HARP read an invented distance-gradient pressure field;
+> it now reads a real WNTR solve), **Net3 CDS 39.2%** (a hydraulic-gate bug: the gate demanded a head drop out of every
+> source and delivered nothing), **L-Town MAE 18.45 m** (an old model; also, valves and pumps were missing from the flow
+> graph), **~180K GAT parameters** (it is ~91K), **Kruskal's MST** (the generator uses **Prim's**), and any
+> "500 scenarios" / "6 experiments" counts (there are 7 experiments). WNTR demand noise in the training data was also never
+> applied. **The README and `backend/results/` hold the current, reproducible results.**
+
+
 **Project:** Hydraulics-Aware Resilient Prioritization for Water Distribution Networks  
-**Version:** 2.0 (reflects actual implemented system)  
-**Status:** Implemented and Verified
+**Version:** 2.0 (architecture; see the notice above for superseded numbers)  
+**Status:** Implemented. Results sections are historical.
 
 ---
 
@@ -36,7 +46,7 @@
 ║  │                                                                      │ ║
 ║  │  ┌──────────────┐    ┌──────────────┐    ┌──────────────────────┐  │ ║
 ║  │  │ City Selector │───►│ WDN Generator│───►│ Scenario Injection   │  │ ║
-║  │  │ (10 cities)  │    │ Kruskal MST  │    │ Burst/Leak/Surge/    │  │ ║
+║  │  │ (10 cities)  │    │ Prim's MST   │    │ Burst/Leak/Surge/    │  │ ║
 ║  │  │              │    │ + Redundancy │    │ Multi-Failure        │  │ ║
 ║  │  └──────────────┘    └──────────────┘    └──────────┬───────────┘  │ ║
 ║  │                                                       │              │ ║
@@ -137,7 +147,7 @@ Each city has: lat/lon center, radius (m), state, district.
 
 2. Compute distance matrix: Haversine between all node pairs
 
-3. Build MST backbone via Kruskal's algorithm:
+3. Build MST backbone via Prim's algorithm (from the first source):
    - Sort edges by length, add if connects new node (union-find)
    - Guarantees full network connectivity
 
@@ -345,7 +355,7 @@ Layer 3: GATConv(256 → 32, heads=2, edge_dim=6, concat=True) → (N, 64)
 Output: Linear(64 → 1) → squeeze → (N,) predicted pressure heads (m)
 ```
 
-~180K parameters. Training: Adam lr=1e-3, max 100 epochs, early stopping patience=15.
+~91K parameters (measured: 90,817 with 8 node inputs). Training: Adam lr=1e-3, max 100 epochs, early stopping patience=15.
 
 ### 7.2 Physics Regularization Loss
 
