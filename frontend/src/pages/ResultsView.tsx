@@ -300,7 +300,7 @@ export default function ResultsView({ sharedSim }: Props) {
                 </span>
               )}
               {simResult?.pressure_uncertainty_m && (
-                <span className="pill pill-gray" style={{ fontSize: 10 }}>GAT confidence shown</span>
+                <span className="pill pill-gray" style={{ fontSize: 10 }}>MC-dropout spread shown (uncalibrated)</span>
               )}
             </div>
             <div style={{ overflowX: 'auto' }}>
@@ -313,7 +313,7 @@ export default function ResultsView({ sharedSim }: Props) {
                     <th>Demand m³/s</th>
                     <th>Elevation m</th>
                     <th>Pressure m</th>
-                    {simResult?.pressure_uncertainty_m && <th>Confidence</th>}
+                    {simResult?.pressure_uncertainty_m && <th title="MC-dropout std; not calibrated against real error">Spread</th>}
                     <th>Status</th>
                   </tr>
                 </thead>
@@ -600,10 +600,10 @@ export default function ResultsView({ sharedSim }: Props) {
             {/* GAT Uncertainty Chart */}
             {simResult?.pressure_uncertainty_m && Object.keys(simResult.pressure_uncertainty_m).length > 0 && (
               <div className="card">
-                <div className="card-hd"><IconThermometer size={13} /> GAT Prediction Confidence — Per Node</div>
+                <div className="card-hd"><IconThermometer size={13} /> GAT MC-Dropout Spread — Per Node (uncalibrated; not a reliable error estimate)</div>
                 <div className="card-body">
                   <div style={{ display: 'flex', gap: 16, marginBottom: 10 }}>
-                    {[['var(--green)', '< 2 m std', 'High confidence'], ['var(--amber)', '2–5 m std', 'Moderate'], ['var(--red)', '> 5 m std', 'Uncertain']].map(([c, range, label]) => (
+                    {[['var(--green)', '< 2 m std', 'Low spread'], ['var(--amber)', '2–5 m std', 'Moderate'], ['var(--red)', '> 5 m std', 'High spread']].map(([c, range, label]) => (
                       <div key={label} style={{ display: 'flex', alignItems: 'center', gap: 5, fontSize: 10, color: 'var(--text-2)' }}>
                         <span style={{ width: 10, height: 10, borderRadius: 2, background: c, display: 'inline-block' }} />
                         <span style={{ color: c, fontWeight: 700 }}>{label}</span>

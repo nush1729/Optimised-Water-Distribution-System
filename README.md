@@ -48,7 +48,42 @@ The system has four parts:
 - **PressureGAT**, a graph neural network that predicts nodal pressures much faster than a full hydraulic solve.
 - **Sensing**: a z-score anomaly detector and an `auto_respond` endpoint that goes from sensor readings to a recovery recommendation.
 
-<!--RESULTS-->
+Everything below was produced by the committed code and checkpoints (CSVs in `backend/results/`, GAT metrics in `gat_eval_*.json`). Experiments run on Net3 unless noted.
+
+**PressureGAT (held-out test scenarios, residual target)**
+
+| Network | Test scenarios | MAE | R² | "Nothing failed" baseline MAE | Gate agreement |
+|---|---|---|---|---|---|
+| Net3 | 265 | 2.01 m | 0.84 | 1.63 m | 98% |
+| L-Town | 200 | 0.51 m | 0.97 | 0.11 m | 99.9% |
+
+On Net3 the model beats "assume nothing failed" on the worst quartile of failures (3.13 m vs 3.30 m MAE) but not overall, and is closer to the truth in 27% of scenarios. On L-Town most failures barely move pressure, so the intact baseline wins. MC-dropout spread is **not** calibrated against real error (Spearman -0.07 on Net3, -0.41 on L-Town); the UI labels it as a spread, not a confidence.
+
+**Single-pipe failures (experiment 1, 20 scenarios)**
+
+| Method | Critical-demand satisfaction | Pressure violations / scenario | Water lost (m³) | Time |
+|---|---|---|---|---|
+| No recovery | 0.986 | 5.5 | 10.5 | - |
+| Dinic's | 0.998 | n/a | 0.70 | 7 ms |
+| HARP | 0.998 | 4.1 | 0.70 | 39 ms |
+
+Net3 is robust to one broken pipe, so all methods serve hospitals, schools and fire stations fully. HARP's measurable gain here is fewer pressure violations than no recovery, not higher delivery.
+
+**Stress scenarios (experiment 7, allocations solved with real hydraulics; 20 draws each)**
+
+| Scenario | Method | Promised | Delivered | Critical delivered | Pressure violations |
+|---|---|---|---|---|---|
+| 3 failures | Dinic's | 0.99 | 0.85 | 0.99 | 6.35 |
+| 3 failures | HARP | 0.82 | 0.83 | 0.99 | 0.65 |
+| 6 cascading | Dinic's | 0.96 | 0.88 | 0.96 | 5.65 |
+| 6 cascading | HARP | 0.87 | 0.88 | 0.96 | 2.85 |
+| Combined | Dinic's | 0.99 | 0.91 | 1.00 | 4.35 |
+| Combined | HARP | 0.90 | 0.90 | 1.00 | 1.10 |
+
+Dinic's promises more than the network delivers; HARP's promises track what is delivered, and it keeps critical service equal to the baselines while cutting pressure violations by 50-90%. Supply-drop and demand-surge scenarios are served fully by every method.
+
+**Other experiments.** Subgraph search always escalated to the full graph on Net3 (so the full graph is faster, 24 ms vs 38 ms), and the ablation variants (no priority, no hydraulic check, no subgraph) score identically on single failures. On L-Town (experiment 5) HARP with k=2 takes about 5.5 s per scenario against 0.36 s for Dinic's, so it is much slower on larger networks.
+
 
 ---
 
@@ -355,7 +390,7 @@ notebooks/                    Colab training notebook
 python -m pytest backend/tests -q
 ```
 
-<!--TESTCOUNT-->
+The backend suite currently has 84 tests, all passing.
 
 CI (GitHub Actions) runs the backend suite on Python 3.11 with CPU torch, and the frontend typecheck and build, on every push to `main`.
 
@@ -364,6 +399,8 @@ CI (GitHub Actions) runs the backend suite on Python 3.11 with CPU torch, and th
 ## Limitations
 
 - **Research prototype.** HARP recommends; a human must approve valve actions. It has not been validated on a real utility network.
+- **MC-dropout uncertainty is uncalibrated** (see Key Results); do not read it as a confidence interval.
+- **HARP speed.** About 15x slower than Dinic's on L-Town; subgraph search does not save time on Net3.
 - **GAT accuracy.** On Net3 the surrogate is not clearly better than simply assuming nothing failed (see the table above). The hydraulic gate is also inactive on well-pressurised networks: single-pipe failures on Net3 and L-Town barely change delivery, so every method scores near 100%. Use experiment 7's stress scenarios to see differences.
 - **Sensors are simulated** in the dashboard and in `/india/events`; only `/sensors/readings` and MQTT take real data.
 - **Priority node ids** for Net3 and L-Town are hand-picked in `backend/data/priority_config.json` (a test checks they exist). Hanoi is a bundled benchmark file with no trained model and is not exposed in the UI.

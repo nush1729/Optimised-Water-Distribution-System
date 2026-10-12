@@ -146,7 +146,7 @@ def predict_pressures_with_uncertainty(
     """
     MC-Dropout inference: run the model n_samples times with dropout active,
     return (mean_pressures_m, std_pressures_m, inference_time_ms).
-    std is a per-node confidence measure — high std means the model is uncertain.
+    std is the spread of the stochastic passes. Evaluation shows it is NOT calibrated against real error (Spearman std-vs-error is ~0 on Net3 and negative on L-Town), so treat it as a diagnostic, not a confidence.
     Typical interpretation: std < 2m = confident, 2–5m = moderate, >5m = uncertain.
     """
     nf = _pad_node_features(graph_data["node_features"].copy(), model)

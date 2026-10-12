@@ -1,0 +1,19 @@
+{
+  "network": "Net3",
+  "n_test_scenarios": 265,
+  "MAE_m": 2.0146920680999756,
+  "RMSE_m": 5.257101535797119,
+  "R2": 0.8401747687421919,
+  "naive_MAE_m": 7.738458156585693,
+  "improvement_over_naive_pct": 73.96520046586537,
+  "residual_model": true,
+  "intact_baseline_MAE_m": 1.6329104900360107,
+  "intact_baseline_MAE_high_impact_m": 3.3032045364379883,
+  "share_scenarios_better_than_intact": 0.27169811320754716,
+  "MAE_high_impact_quartile_m": 3.132962703704834,
+  "MAE_other_m": 1.6362874507904053,
+  "gate_decision_agreement": 0.9795970578829549,
+  "gate_false_servable": 0.020402942117045093,
+  "gate_false_blocked": 0.0,
+  "mc_dropout_spearman_std_vs_error": -0.0665171053543816
+}
