@@ -1,4 +1,5 @@
 """GAT inference for real-time pressure prediction."""
+import copy
 import logging
 import os
 import sys
@@ -146,16 +147,18 @@ def predict_pressures_with_uncertainty(
     edge_index = torch.tensor(ei, dtype=torch.long)
     edge_attr  = torch.tensor(ef, dtype=torch.float32)
 
-    # Enable dropout by setting model to train mode, but disable grad
-    model.train()
+    # Enable dropout on a private copy. The cached model is shared by every
+    # request; flipping it to train mode in place would let a concurrent
+    # deterministic predict_pressures() call run with dropout active.
+    mc_model = copy.deepcopy(model)
+    mc_model.train()
     t0 = time.perf_counter()
     samples = []
     with torch.no_grad():
         for _ in range(n_samples):
-            out = model(x, edge_index, edge_attr)
+            out = mc_model(x, edge_index, edge_attr)
             samples.append(out.numpy() * p_range + p_min)
     dt_ms = (time.perf_counter() - t0) * 1000.0
-    model.eval()
 
     samples    = np.stack(samples, axis=0)  # (n_samples, n_nodes)
     mean_p     = samples.mean(axis=0)

@@ -34,15 +34,14 @@ def _load_priority_config(network_name: str) -> dict:
     return all_cfg.get(network_name, {})
 
 
-def generate_scenarios(
-    network_name: str,
-    n_scenarios: int = 500,
-    seed_start: int = 0,
-) -> None:
-    """Generate n_scenarios hydraulic simulation scenarios for GAT training."""
+def _generate_chunk(network_name: str, n_scenarios: int, seed_start: int = 0) -> dict:
+    """Simulate scenarios seed_start .. seed_start+n_scenarios-1 and pickle each.
+
+    Scenario k is fully determined by its seed (seed_start + k), so running the
+    range in one process or split across several gives byte-identical data.
+    Returns {"generated", "skipped", "errors": [rows]}.
+    """
     os.makedirs(GENERATED_DIR, exist_ok=True)
-    errors_path = os.path.join(RESULTS_DIR, "generation_errors.csv")
-    os.makedirs(RESULTS_DIR, exist_ok=True)
 
     priority_config = _load_priority_config(network_name)
     wn_base = load_network(network_name)
@@ -159,7 +158,7 @@ def generate_scenarios(
 
         if not converged:
             n_skipped += 1
-            error_rows.append({"scenario": i, "network": network_name,
+            error_rows.append({"scenario": scenario_seed, "network": network_name,
                                 "pipe": failed_pipe_id, "error": "convergence_failure"})
             continue
 
@@ -190,7 +189,7 @@ def generate_scenarios(
         if pressure_heads.min() < PLAUSIBLE_MIN or pressure_heads.max() > PLAUSIBLE_MAX:
             n_skipped += 1
             error_rows.append({
-                "scenario": i, "network": network_name, "pipe": failed_pipe_id,
+                "scenario": scenario_seed, "network": network_name, "pipe": failed_pipe_id,
                 "error": f"implausible_pressure(min={pressure_heads.min():.2f},max={pressure_heads.max():.2f})",
             })
             continue
@@ -209,7 +208,7 @@ def generate_scenarios(
                 demand_met[j] = min(max(actual / base, 0.0), 1.0)
 
         scenario_data = {
-            "scenario_id": i,
+            "scenario_id": scenario_seed,
             "network_name": network_name,
             "seed": scenario_seed,
             "failed_pipe_id": failed_pipe_id,
@@ -224,24 +223,22 @@ def generate_scenarios(
             "wntr_converged": True,
         }
 
-        out_path = os.path.join(GENERATED_DIR, f"{network_name}_{i:04d}.pkl")
+        out_path = os.path.join(GENERATED_DIR, f"{network_name}_{scenario_seed:04d}.pkl")
         with open(out_path, "wb") as f:
             pickle.dump(scenario_data, f)
         n_generated += 1
 
         if (i + 1) % 50 == 0:
-            print(f"  Progress: {i+1}/{n_scenarios} scenarios | generated: {n_generated}, skipped: {n_skipped}")
+            print(f"  [seed {seed_start}+] {i+1}/{n_scenarios} | generated: {n_generated}, skipped: {n_skipped}", flush=True)
 
-    # Save errors
-    if error_rows:
-        with open(errors_path, "w", newline="") as f:
-            writer = csv.DictWriter(f, fieldnames=["scenario", "network", "pipe", "error"])
-            writer.writeheader()
-            writer.writerows(error_rows)
+    return {"generated": n_generated, "skipped": n_skipped, "errors": error_rows}
 
-    # Create split file
+
+def _write_split(network_name: str, seed_start: int, n_scenarios: int) -> dict:
+    """Write the train/val/test split (80/10/10, in seed order) over the scenario
+    files that actually exist."""
     generated_ids = [
-        i for i in range(n_scenarios)
+        i for i in range(seed_start, seed_start + n_scenarios)
         if os.path.exists(os.path.join(GENERATED_DIR, f"{network_name}_{i:04d}.pkl"))
     ]
     n_total = len(generated_ids)
@@ -256,13 +253,53 @@ def generate_scenarios(
         }
     else:
         split = {"train": generated_ids, "val": [], "test": []}
-
-    split_path = os.path.join(GENERATED_DIR, f"{network_name}_split.json")
-    with open(split_path, "w") as f:
+    with open(os.path.join(GENERATED_DIR, f"{network_name}_split.json"), "w") as f:
         json.dump(split, f)
+    return split
 
+
+def generate_scenarios(
+    network_name: str,
+    n_scenarios: int = 500,
+    seed_start: int = 0,
+    workers: int = 1,
+) -> dict:
+    """Generate n_scenarios hydraulic simulation scenarios for GAT training.
+
+    workers > 1 splits the seed range across processes (WNTR is CPU-bound and
+    single-threaded, so this scales roughly linearly with cores). Output is
+    identical to workers=1 because every scenario is seeded individually.
+    """
+    os.makedirs(GENERATED_DIR, exist_ok=True)
+    os.makedirs(RESULTS_DIR, exist_ok=True)
+
+    workers = max(1, min(int(workers), n_scenarios))
+    if workers == 1:
+        results = [_generate_chunk(network_name, n_scenarios, seed_start)]
+    else:
+        import multiprocessing as mp
+        step = -(-n_scenarios // workers)  # ceil
+        jobs = []
+        for w in range(workers):
+            start = seed_start + w * step
+            count = min(step, seed_start + n_scenarios - start)
+            if count > 0:
+                jobs.append((network_name, count, start))
+        with mp.get_context("spawn").Pool(len(jobs)) as pool:
+            results = pool.starmap(_generate_chunk, jobs)
+
+    n_generated = sum(r["generated"] for r in results)
+    n_skipped = sum(r["skipped"] for r in results)
+    error_rows = [row for r in results for row in r["errors"]]
+    if error_rows:
+        with open(os.path.join(RESULTS_DIR, "generation_errors.csv"), "w", newline="") as f:
+            writer = csv.DictWriter(f, fieldnames=["scenario", "network", "pipe", "error"])
+            writer.writeheader()
+            writer.writerows(error_rows)
+
+    split = _write_split(network_name, seed_start, n_scenarios)
     print(f"\n=== {network_name} generation complete ===")
-    print(f"  Generated: {n_generated} | Skipped: {n_skipped} | Error rate: {n_skipped/n_scenarios*100:.1f}%")
+    print(f"  Generated: {n_generated} | Skipped: {n_skipped} | Error rate: {n_skipped/max(n_scenarios,1)*100:.1f}%")
     print(f"  Split: train={len(split['train'])} val={len(split['val'])} test={len(split['test'])}")
     return {"generated": n_generated, "skipped": n_skipped}
 
@@ -272,5 +309,6 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--network", default="Net3")
     parser.add_argument("--n", type=int, default=50)
+    parser.add_argument("--workers", type=int, default=1)
     args = parser.parse_args()
-    generate_scenarios(args.network, args.n)
+    generate_scenarios(args.network, args.n, workers=args.workers)

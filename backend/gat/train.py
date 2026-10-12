@@ -72,7 +72,13 @@ def train_model(
     val_loader = DataLoader(val_ds, batch_size=batch_size, shuffle=False)
     test_loader = DataLoader(test_ds, batch_size=batch_size, shuffle=False)
 
-    model = PressureGAT()
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    print(f"  Device: {device}")
+    torch.manual_seed(SEED_TRAIN)
+    np.random.seed(SEED_TRAIN)
+    random.seed(SEED_TRAIN)
+
+    model = PressureGAT().to(device)
     optimizer = torch.optim.Adam(model.parameters(), lr=lr, weight_decay=weight_decay)
     scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
         optimizer, patience=5, factor=0.5
@@ -94,6 +100,7 @@ def train_model(
             model.train()
             train_losses = []
             for batch in train_loader:
+                batch = batch.to(device)
                 optimizer.zero_grad()
                 out = model(batch.x, batch.edge_index, batch.edge_attr)
                 mse = mse_loss(out, batch.y)
@@ -112,6 +119,7 @@ def train_model(
             val_losses = []
             with torch.no_grad():
                 for batch in val_loader:
+                    batch = batch.to(device)
                     out = model(batch.x, batch.edge_index, batch.edge_attr)
                     val_losses.append(float(mse_loss(out, batch.y).item()))
 
@@ -130,7 +138,7 @@ def train_model(
                 best_val_loss = val_loss
                 best_epoch = epoch
                 patience_counter = 0
-                best_state = {k: v.clone() for k, v in model.state_dict().items()}
+                best_state = {k: v.detach().cpu().clone() for k, v in model.state_dict().items()}
             else:
                 patience_counter += 1
                 if patience_counter >= patience:
@@ -146,7 +154,9 @@ def train_model(
     torch.save({"model_state": model.state_dict(), "norm_stats": norm_stats}, model_path)
     print(f"  Model saved: {model_path}")
 
-    # Test evaluation
+    # Test evaluation (CPU: matches how the API serves the model, and keeps the
+    # reported inference time comparable to production).
+    model.cpu()
     model.eval()
     all_true, all_pred = [], []
     inference_times = []
@@ -172,11 +182,20 @@ def train_model(
     # Relative error (avoid div by zero)
     nonzero = np.abs(all_true) > 0.1
     mre = float(np.mean(np.abs((all_true[nonzero] - all_pred[nonzero]) / all_true[nonzero]) * 100)) if nonzero.sum() > 0 else 0.0
-    mean_inf_time = float(np.mean(inference_times))
+    mean_inf_time = float(np.mean(inference_times)) if inference_times else 0.0
+    ss_res = float(np.sum((all_true - all_pred) ** 2))
+    ss_tot = float(np.sum((all_true - all_true.mean()) ** 2))
+    r2 = 1.0 - ss_res / ss_tot if ss_tot > 0 else float("nan")
+    # Naive reference: always predict the training-set mean pressure. A model
+    # that does not clearly beat this has learned nothing about the failure.
+    train_mean = float(np.mean([float(train_ds.get(i).pressure_raw.mean()) for i in range(len(train_ds))]))
+    naive_mae = float(np.mean(np.abs(all_true - train_mean)))
 
     print(f"\n=== Test Results ({network_name}) ===")
     print(f"  MAE: {mae:.4f} m")
     print(f"  RMSE: {rmse:.4f} m")
+    print(f"  R2: {r2:.4f}")
+    print(f"  Naive (predict train mean) MAE: {naive_mae:.4f} m")
     print(f"  Mean Relative Error: {mre:.2f}%")
     print(f"  Mean Inference Time: {mean_inf_time:.1f} ms")
 
@@ -197,7 +216,7 @@ def train_model(
     # unconditionally, so only the most recently trained network's summary
     # ever survived).
     summary_path = os.path.join(RESULTS_DIR, "experiment_2_summary.csv")
-    fieldnames = ["network", "MAE_m", "RMSE_m", "mean_relative_error_pct", "inference_ms"]
+    fieldnames = ["network", "MAE_m", "RMSE_m", "mean_relative_error_pct", "inference_ms", "R2", "naive_MAE_m"]
     existing_rows = {}
     if os.path.exists(summary_path):
         with open(summary_path, newline="") as f:
@@ -206,9 +225,10 @@ def train_model(
     existing_rows[network_name] = {
         "network": network_name, "MAE_m": mae, "RMSE_m": rmse,
         "mean_relative_error_pct": mre, "inference_ms": mean_inf_time,
+        "R2": r2, "naive_MAE_m": naive_mae,
     }
     with open(summary_path, "w", newline="") as f:
-        writer = csv.DictWriter(f, fieldnames=fieldnames)
+        writer = csv.DictWriter(f, fieldnames=fieldnames, restval="")
         writer.writeheader()
         for row in existing_rows.values():
             writer.writerow(row)
@@ -225,5 +245,9 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--network", default="Net3")
     parser.add_argument("--epochs", type=int, default=100)
+    parser.add_argument("--patience", type=int, default=15)
+    parser.add_argument("--batch-size", type=int, default=32)
+    parser.add_argument("--lr", type=float, default=1e-3)
     args = parser.parse_args()
-    train_model(args.network, max_epochs=args.epochs)
+    train_model(args.network, max_epochs=args.epochs, patience=args.patience,
+                batch_size=args.batch_size, lr=args.lr)
