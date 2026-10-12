@@ -123,6 +123,11 @@ def evaluate_model(network_name: str, mc_samples: int = 30, mc_scenarios: int = 
         "improvement_over_naive_pct": 100.0 * (1.0 - mae / naive_mae) if naive_mae > 0 else float("nan"),
         "residual_model": residual,
         "intact_baseline_MAE_m": float(np.mean(np.concatenate(intact_err))) if residual else None,
+        # the same comparison on the failures that really move pressure (worst quartile)
+        "intact_baseline_MAE_high_impact_m": float(np.mean([intact_err[i].mean() for i in np.where(hi)[0]])) if residual and hi.any() else None,
+        # share of scenarios where the model is closer to the truth than "nothing failed"
+        "share_scenarios_better_than_intact": float(np.mean([np.abs(y_pred[i] - y_true[i]).mean() < intact_err[i].mean()
+                                                            for i in range(len(y_true))])) if residual else None,
         "MAE_high_impact_quartile_m": mae_hi,
         "MAE_other_m": mae_lo,
         "gate_decision_agreement": gate_agree / max(gate_n, 1),
