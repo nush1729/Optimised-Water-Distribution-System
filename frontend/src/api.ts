@@ -39,6 +39,17 @@ export const listExperiments = () => api.get("/results/experiments").then((r) =>
 export const getExperiment   = (id: number) => api.get(`/results/experiment/${id}`).then((r) => r.data);
 export const listFigures     = () => api.get("/results/figures").then((r) => r.data);
 export const detectAnomaly   = (payload: object) => api.post("/anomaly/detect", payload).then((r) => r.data);
+export const autoRespond     = (payload: object) => api.post("/anomaly/auto_respond", payload).then((r) => r.data);
+
+// ── Run history (backend/runs.py) ──────────────────────────────────────────
+export interface RunRecord {
+  id: number; ts: number; kind: string; network: string
+  method: string | null; scenario: string | null; failed_pipes: string[]
+  cds_overall: number | null; cds_critical: number | null; pvc: number | null
+  runtime_ms: number | null; escalated: boolean | null
+}
+export const listRuns = (limit = 100, kind?: string): Promise<RunRecord[]> =>
+  api.get("/runs", { params: { limit, kind } }).then((r) => r.data.runs);
 
 // ── Schema adapters ────────────────────────────────────────────────────────
 // Backend uses different field names than the frontend WDNData types.

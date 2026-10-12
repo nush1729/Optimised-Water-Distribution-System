@@ -6,6 +6,7 @@ import type { SharedSimState } from './types'
 import SimulationView from './pages/IndiaMapView'
 import ResultsView from './pages/ResultsView'
 import NetworkView from './pages/NetworkView'
+import HistoryView from './pages/HistoryView'
 
 export default function App() {
   const [theme, setTheme] = useState<'light' | 'dark'>('light')
@@ -47,6 +48,10 @@ export default function App() {
               <IconNetwork size={14} />
               Network
             </NavLink>
+            <NavLink to="/history" className={({ isActive }) => `nav-link${isActive ? ' active' : ''}`}>
+              <IconActivity size={14} />
+              History
+            </NavLink>
           </div>
 
           <div className="nav-spacer" />
@@ -65,6 +70,7 @@ export default function App() {
             <Route path="/" element={<SimulationView onSimComplete={setSharedSim} />} />
             <Route path="/results" element={<ResultsView sharedSim={sharedSim} />} />
             <Route path="/network" element={<NetworkView sharedSim={sharedSim} />} />
+            <Route path="/history" element={<HistoryView />} />
             <Route path="*" element={<Navigate to="/" replace />} />
           </Routes>
         </div>

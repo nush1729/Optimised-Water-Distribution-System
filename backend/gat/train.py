@@ -79,7 +79,9 @@ def train_model(
     np.random.seed(SEED_TRAIN)
     random.seed(SEED_TRAIN)
 
-    model = PressureGAT().to(device)
+    node_in = int(train_ds.get(0).x.shape[1])      # 8 for legacy data, 10 with the load features
+    print(f"  Node input features: {node_in}")
+    model = PressureGAT(node_in=node_in).to(device)
     optimizer = torch.optim.Adam(model.parameters(), lr=lr, weight_decay=weight_decay)
     scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
         optimizer, patience=5, factor=0.5
@@ -152,7 +154,7 @@ def train_model(
 
     # Save model
     model_path = os.path.join(MODELS_DIR, f"{network_name}_gat.pt")
-    torch.save({"model_state": model.state_dict(), "norm_stats": norm_stats}, model_path)
+    torch.save({"model_state": model.state_dict(), "norm_stats": norm_stats, "node_in": node_in}, model_path)
     print(f"  Model saved: {model_path}")
 
     # Test evaluation (CPU: matches how the API serves the model, and keeps the

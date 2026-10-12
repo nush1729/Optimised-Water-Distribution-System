@@ -42,6 +42,7 @@ def _generate_chunk(network_name: str, n_scenarios: int, seed_start: int = 0) ->
     priority_config = _load_priority_config(network_name)
     wn_base = load_network(network_name)
     all_pipes = wn_base.pipe_name_list
+    reference_demands = {n: float(wn_base.get_node(n).base_demand) for n in wn_base.junction_name_list}
 
     # Exclude very small pipes and reservoir-connected pipes
     reservoir_nodes = set(wn_base.reservoir_name_list + wn_base.tank_name_list)
@@ -160,6 +161,8 @@ def _generate_chunk(network_name: str, n_scenarios: int, seed_start: int = 0) ->
             wn_for_features,
             failed_pipe_id=failed_pipe_id,
             # no demand_multipliers: the network already carries the scaled demands
+            reference_demands=reference_demands,
+            extended=True,
             priority_config=priority_config,
             network_name=network_name,
         )

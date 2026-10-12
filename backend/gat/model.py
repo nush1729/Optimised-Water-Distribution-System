@@ -21,6 +21,7 @@ class PressureGAT(nn.Module):
 
     def __init__(self, node_in: int = 8, edge_dim: int = 6, dropout: float = 0.1):
         super().__init__()
+        self.node_in = node_in
         self.conv1 = GATConv(node_in, 64, heads=4, edge_dim=edge_dim, concat=True, dropout=dropout)
         self.norm1 = LayerNorm(256)
         self.conv2 = GATConv(256, 64, heads=4, edge_dim=edge_dim, concat=True, dropout=dropout)

@@ -27,7 +27,7 @@ def load_model(network_name: str):
         raise FileNotFoundError(f"No trained model found for {network_name}: {model_path}")
 
     checkpoint = torch.load(model_path, map_location="cpu", weights_only=True)
-    model = PressureGAT()
+    model = PressureGAT(node_in=int(checkpoint.get("node_in", 8)))
     model.load_state_dict(checkpoint["model_state"])
     model.eval()
     norm_stats = checkpoint.get("norm_stats", {})
@@ -50,6 +50,16 @@ def _residual_baseline(norm_stats: dict, node_ids: list):
     return np.asarray(norm_stats["baseline"], dtype=np.float32)
 
 
+def _pad_node_features(nf: np.ndarray, model) -> np.ndarray:
+    """Models trained with the load features expect more columns than a plain
+    extract_graph_features() call provides; the missing ones are ratio = load = 1
+    (demands equal the reference, which is what the base network has)."""
+    need = int(getattr(model, "node_in", nf.shape[1]))
+    if nf.shape[1] < need:
+        nf = np.concatenate([nf, np.ones((nf.shape[0], need - nf.shape[1]), dtype=nf.dtype)], axis=1)
+    return nf
+
+
 def predict_pressures(
     model: PressureGAT,
     norm_stats: dict,
@@ -59,7 +69,7 @@ def predict_pressures(
     Run GAT forward pass, denormalize, return (pressure_heads_m, inference_time_ms).
     Warns if inference time > 100ms.
     """
-    nf = graph_data["node_features"].copy()
+    nf = _pad_node_features(graph_data["node_features"].copy(), model)
     ef = graph_data["edge_features"].copy()
     ei = graph_data["edge_index"]
 
@@ -139,7 +149,7 @@ def predict_pressures_with_uncertainty(
     std is a per-node confidence measure — high std means the model is uncertain.
     Typical interpretation: std < 2m = confident, 2–5m = moderate, >5m = uncertain.
     """
-    nf = graph_data["node_features"].copy()
+    nf = _pad_node_features(graph_data["node_features"].copy(), model)
     ef = graph_data["edge_features"].copy()
     ei = graph_data["edge_index"]
 

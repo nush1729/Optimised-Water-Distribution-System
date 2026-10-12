@@ -139,8 +139,19 @@ def extract_graph_features(
     demand_multipliers: dict = None,
     priority_config: dict = None,
     network_name: str = "Net3",
+    reference_demands: dict = None,
+    extended: bool = False,
 ) -> dict:
-    """Extract PyG-compatible graph representation from WNTR network."""
+    """Extract PyG-compatible graph representation from WNTR network.
+
+    extended=True appends two load features (10 node columns instead of 8):
+      [8] demand ratio  = this node's demand / its reference (intact) demand
+      [9] load factor   = total demand / total reference demand (same for every node)
+    They tell the model how far today's demand is from normal, so it can separate
+    demand-driven pressure shifts from failure-driven ones. reference_demands maps
+    node id -> intact demand; when omitted the network's own demands are the
+    reference, giving ratio = load = 1 (what inference sees for the base network).
+    """
     if demand_multipliers is None:
         demand_multipliers = {}
     if priority_config is None:
@@ -154,7 +165,7 @@ def extract_graph_features(
     N = len(node_ids)
 
     # Node features (N, 8)
-    node_features = np.zeros((N, 8), dtype=np.float32)
+    node_features = np.zeros((N, 10 if extended else 8), dtype=np.float32)
     failed_pipe_endpoints: list = []
     closed_pipe_ids: set = set()
     for i, nid in enumerate(node_ids):
@@ -181,7 +192,7 @@ def extract_graph_features(
         ph = _get_priority_features(nid, priority_config, network_name)
         # 8th feature (proximity_to_failure) filled in below once the open-
         # edge adjacency and failed-pipe endpoints are known.
-        node_features[i] = [elev, base_d, is_res] + ph + [0.0]
+        node_features[i, :8] = [elev, base_d, is_res] + ph + [0.0]
 
     # Edge list from pipes (bidirectional)
     pipe_ids_ordered = sorted(wn.pipe_name_list)
@@ -243,6 +254,17 @@ def extract_graph_features(
                     frontier.append(v)
         for nid, d in dist.items():
             node_features[node_idx[nid], 7] = 1.0 / (1.0 + d)
+
+    if extended:
+        ref = reference_demands or {}
+        tot = ref_tot = 0.0
+        for i, nid in enumerate(node_ids):
+            d = float(node_features[i, 1])
+            r = float(ref.get(nid, d))
+            tot += d
+            ref_tot += r
+            node_features[i, 8] = d / r if r > 0 else 1.0
+        node_features[:, 9] = tot / ref_tot if ref_tot > 0 else 1.0
 
     edge_index = np.array([src_list, dst_list], dtype=np.int64)
     edge_features = np.array(efeats, dtype=np.float32)
