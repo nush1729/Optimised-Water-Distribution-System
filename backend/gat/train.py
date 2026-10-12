@@ -48,13 +48,14 @@ def train_model(
     patience: int = 15,
     lambda_phys: float = 0.01,
     oversample_high_impact: bool = True,
+    residual: bool = False,
 ) -> PressureGAT:
     """Train GAT on pre-generated scenarios. Returns trained model."""
     os.makedirs(MODELS_DIR, exist_ok=True)
     os.makedirs(RESULTS_DIR, exist_ok=True)
 
     print(f"Loading {network_name} datasets...")
-    train_ds = WDNScenarioDataset(network_name, split="train")
+    train_ds = WDNScenarioDataset(network_name, split="train", residual=residual)
     norm_stats = train_ds.norm_stats
     val_ds = WDNScenarioDataset(network_name, split="val", norm_stats=norm_stats)
     test_ds = WDNScenarioDataset(network_name, split="test", norm_stats=norm_stats)
@@ -158,7 +159,7 @@ def train_model(
     # reported inference time comparable to production).
     model.cpu()
     model.eval()
-    all_true, all_pred = [], []
+    all_true, all_pred, all_base = [], [], []
     inference_times = []
 
     with torch.no_grad():
@@ -170,10 +171,11 @@ def train_model(
             # Denormalize
             p_min = float(batch.pressure_min[0]) if hasattr(batch, 'pressure_min') else 0.0
             p_range_val = float(batch.pressure_range[0]) if hasattr(batch, 'pressure_range') else 1.0
-            pred_m = out.numpy() * p_range_val + p_min
+            pred_m = out.numpy() * p_range_val + p_min + batch.baseline.numpy()
             true_m = batch.pressure_raw.numpy()
             all_true.extend(true_m.tolist())
             all_pred.extend(pred_m.tolist())
+            all_base.extend(batch.baseline.numpy().tolist())
 
     all_true = np.array(all_true)
     all_pred = np.array(all_pred)
@@ -190,12 +192,17 @@ def train_model(
     # that does not clearly beat this has learned nothing about the failure.
     train_mean = float(np.mean([float(train_ds.get(i).pressure_raw.mean()) for i in range(len(train_ds))]))
     naive_mae = float(np.mean(np.abs(all_true - train_mean)))
+    # "Assume nothing failed": predict the intact network's pressure (residual mode only;
+    # the baseline is stored with the checkpoint). A model must beat this to be useful.
+    intact_mae = float(np.mean(np.abs(all_true - np.array(all_base)))) if norm_stats.get("residual") else float("nan")
 
     print(f"\n=== Test Results ({network_name}) ===")
     print(f"  MAE: {mae:.4f} m")
     print(f"  RMSE: {rmse:.4f} m")
     print(f"  R2: {r2:.4f}")
     print(f"  Naive (predict train mean) MAE: {naive_mae:.4f} m")
+    if norm_stats.get("residual"):
+        print(f"  Intact-network baseline MAE: {intact_mae:.4f} m")
     print(f"  Mean Relative Error: {mre:.2f}%")
     print(f"  Mean Inference Time: {mean_inf_time:.1f} ms")
 
@@ -216,7 +223,7 @@ def train_model(
     # unconditionally, so only the most recently trained network's summary
     # ever survived).
     summary_path = os.path.join(RESULTS_DIR, "experiment_2_summary.csv")
-    fieldnames = ["network", "MAE_m", "RMSE_m", "mean_relative_error_pct", "inference_ms", "R2", "naive_MAE_m"]
+    fieldnames = ["network", "MAE_m", "RMSE_m", "mean_relative_error_pct", "inference_ms", "R2", "naive_MAE_m", "intact_baseline_MAE_m", "residual"]
     existing_rows = {}
     if os.path.exists(summary_path):
         with open(summary_path, newline="") as f:
@@ -226,6 +233,7 @@ def train_model(
         "network": network_name, "MAE_m": mae, "RMSE_m": rmse,
         "mean_relative_error_pct": mre, "inference_ms": mean_inf_time,
         "R2": r2, "naive_MAE_m": naive_mae,
+        "intact_baseline_MAE_m": intact_mae, "residual": bool(norm_stats.get("residual")),
     }
     with open(summary_path, "w", newline="") as f:
         writer = csv.DictWriter(f, fieldnames=fieldnames, restval="")
@@ -248,6 +256,8 @@ if __name__ == "__main__":
     parser.add_argument("--patience", type=int, default=15)
     parser.add_argument("--batch-size", type=int, default=32)
     parser.add_argument("--lr", type=float, default=1e-3)
+    parser.add_argument("--residual", action="store_true",
+                        help="predict the change from the intact network's pressure instead of absolute pressure")
     args = parser.parse_args()
     train_model(args.network, max_epochs=args.epochs, patience=args.patience,
-                batch_size=args.batch_size, lr=args.lr)
+                batch_size=args.batch_size, lr=args.lr, residual=args.residual)

@@ -86,6 +86,36 @@ def _run_no_recovery(wn_base, pipe_id: str, priority_config: dict) -> dict:
             "cds": cds, "PVC": pvc, "WLV_m3": wlv, "CT_ms": 0.0}
 
 
+def _dinic_allocation(wn, failed_pipe_id, priority_config: dict) -> tuple:
+    """Standard Dinic's on the (possibly multi-failure) network.
+
+    Returns (demand_satisfaction, computation_time_ms). Pipes already closed in `wn`
+    are honoured by build_wdn_graph, so this works for any number of failures."""
+    t0 = time.perf_counter()
+    G, _ = build_wdn_graph(wn, failed_pipe_id, priority_config)
+    reservoir_nodes = set(wn.reservoir_name_list + wn.tank_name_list)
+    source_nodes = [n for n in G.nodes if n in reservoir_nodes]
+    sink_nodes = [n for n in G.nodes
+                  if G.nodes[n].get("base_demand", 0) > 0
+                  and not G.nodes[n].get("is_reservoir", False)]
+
+    demand_satisfaction = {}
+    if source_nodes and sink_nodes:
+        # Multi-source via a virtual supersource connected to every reservoir (Net3 has
+        # 5: River, Lake, and three tanks). Running from source_nodes[0] alone read any
+        # node unreachable from that one reservoir as permanently unsatisfied.
+        G_multi_source = G.copy()
+        supersrc = "__DINIC_SUPERSRC__"
+        G_multi_source.add_node(supersrc)
+        for s_ in source_nodes:
+            G_multi_source.add_edge(supersrc, s_, diameter=100.0)
+        demand_satisfaction = Dinic().run(G_multi_source, supersrc, sink_nodes).demand_satisfaction
+
+    for nid in wn.junction_name_list:
+        demand_satisfaction.setdefault(nid, 0.0)
+    return demand_satisfaction, (time.perf_counter() - t0) * 1000.0
+
+
 def _run_dinic(wn_base, pipe_id: str, priority_config: dict) -> dict:
     """Method B: Standard Dinic's (graph-theoretic, hydraulically blind).
 
@@ -93,38 +123,7 @@ def _run_dinic(wn_base, pipe_id: str, priority_config: dict) -> dict:
     fields are reported as None rather than a fabricated constant, since a
     made-up pressure would silently zero out PVC for every scenario.
     """
-    t0 = time.perf_counter()
-    G, _ = build_wdn_graph(wn_base, pipe_id, priority_config)
-    reservoir_nodes = set(wn_base.reservoir_name_list + wn_base.tank_name_list)
-    source_nodes = [n for n in G.nodes if n in reservoir_nodes]
-    sink_nodes = [n for n in G.nodes
-                  if G.nodes[n].get("base_demand", 0) > 0
-                  and not G.nodes[n].get("is_reservoir", False)]
-
-    flow_result = None
-    demand_satisfaction = {}
-    if source_nodes and sink_nodes:
-        # Multi-source via a virtual supersource connected to every reservoir
-        # (Net3 has 5: River, Lake, and three tanks). Previously this ran
-        # Dinic from source_nodes[0] alone — an arbitrary single reservoir —
-        # so any node unreachable from that one reservoir specifically read
-        # as permanently unsatisfied regardless of which pipe failed,
-        # independent of whether the other reservoirs could actually reach it.
-        G_multi_source = G.copy()
-        supersrc = "__DINIC_SUPERSRC__"
-        G_multi_source.add_node(supersrc)
-        for s in source_nodes:
-            G_multi_source.add_edge(supersrc, s, diameter=100.0)
-        dinic = Dinic()
-        flow_result = dinic.run(G_multi_source, supersrc, sink_nodes)
-        demand_satisfaction = flow_result.demand_satisfaction
-
-    # Fill missing nodes
-    for nid in wn_base.junction_name_list:
-        if nid not in demand_satisfaction:
-            demand_satisfaction[nid] = 0.0
-
-    ct_ms = (time.perf_counter() - t0) * 1000.0
+    demand_satisfaction, ct_ms = _dinic_allocation(wn_base, pipe_id, priority_config)
     cds = critical_demand_satisfaction(demand_satisfaction, priority_config)
     wlv = water_loss_volume(demand_satisfaction, _get_base_demands(wn_base))
     return {"demand_satisfaction": demand_satisfaction, "pressures": None,
@@ -474,6 +473,97 @@ def run_exp6(network_name: str = "Net3", n_scenarios: int = 20):
     return rows
 
 
+STRESS_SPECS = [
+    {"name": "multi_3",      "failures": 3},
+    {"name": "multi_6",      "failures": 6},
+    {"name": "cascade_6",    "cascade": 6},
+    {"name": "supply_-20m",  "head_drop": 20},
+    {"name": "supply_-35m",  "head_drop": 35},
+    {"name": "surge_x2",     "surge": 2.0},
+    {"name": "combined",     "failures": 3, "head_drop": 20, "surge": 1.5},
+]
+
+
+def _evaluate_allocation(wn, satisfaction: dict, base_demand: dict):
+    """Apply an allocation (each node receives satisfaction x its demand) and solve the
+    network with real hydraulics. Returns (delivered_fraction per node, pressures) or
+    (None, None) if the solve fails. This is the honest test of a recommended plan:
+    can the network actually deliver it?"""
+    import copy
+    from backend.wntr_engine import scale_node_demand
+    w = copy.deepcopy(wn)
+    for nid in w.junction_name_list:
+        if base_demand.get(nid, 0.0) > 0:
+            scale_node_demand(w.get_node(nid), min(max(satisfaction.get(nid, 0.0), 0.0), 1.0))
+    sim = run_simulation(w)
+    if not sim["converged"] or sim["pressure_df"] is None:
+        return None, None
+    t = sim["pressure_df"].index[min(SNAPSHOT_HOUR, len(sim["pressure_df"].index) - 1)]
+    delivered, pressures = {}, {}
+    for nid in wn.junction_name_list:
+        base = base_demand.get(nid, 0.0)
+        pressures[nid] = float(sim["pressure_df"].at[t, nid])
+        if base <= 0:
+            delivered[nid] = 1.0
+        else:
+            actual = float(sim["demand_df"].at[t, nid]) if nid in sim["demand_df"].columns else 0.0
+            delivered[nid] = min(max(actual / base, 0.0), 1.0)
+    return delivered, pressures
+
+
+def run_exp7(network_name: str = "Net3", n_scenarios: int = 20):
+    """Experiment 7: stress scenarios (multi-failure, cascade, supply loss, surge).
+
+    For each scenario and method the allocation is applied to the network and solved
+    with real hydraulics, so 'CDS_delivered' is what customers would actually get.
+    'CDS_promised' is what the method claimed. A hydraulically blind method can promise
+    far more than the network can deliver. HARP uses the true (oracle) post-stress
+    pressures here to isolate the algorithm from GAT error."""
+    from backend.experiments.scenarios import build_stress_scenario
+    print(f"\n=== Experiment 7: Stress scenarios ({network_name}, {n_scenarios} each) ===")
+    priority_config = _load_priority_config(network_name)
+    wn_base = load_network(network_name)
+    rows = []
+    for si, spec in enumerate(STRESS_SPECS):
+        for i in range(n_scenarios):
+            rng = np.random.default_rng(SEED_TEST + 1000 * si + i)
+            wn_s, failed = build_stress_scenario(wn_base, spec, rng)
+            base_demand = _get_base_demands(wn_s)
+            sim = run_simulation(wn_s)
+            if not sim["converged"] or sim["pressure_df"] is None:
+                continue
+            pdf = sim["pressure_df"]
+            t = pdf.index[min(SNAPSHOT_HOUR, len(pdf.index) - 1)]
+            true_pressure = {n: float(pdf.at[t, n]) for n in pdf.columns}
+
+            allocations = {"none": ({n: 1.0 for n in wn_s.junction_name_list}, 0.0)}
+            allocations["dinic"] = _dinic_allocation(wn_s, None, priority_config)
+            harp_result = HARP().run(
+                wn_s, failed[0] if failed else "NONE", true_pressure, priority_config,
+                k=0, use_subgraph=False,
+            )
+            allocations["harp"] = (harp_result.demand_satisfaction, harp_result.algorithm_time_ms)
+
+            for method, (alloc, ct) in allocations.items():
+                delivered, pressures = _evaluate_allocation(wn_s, alloc, base_demand)
+                if delivered is None:
+                    continue
+                demand_nodes = [n for n, d in base_demand.items() if d > 0]
+                promised = critical_demand_satisfaction({n: alloc.get(n, 0.0) for n in demand_nodes}, priority_config)
+                got = critical_demand_satisfaction({n: delivered[n] for n in demand_nodes}, priority_config)
+                rows.append({
+                    "scenario": spec["name"], "i": i, "n_failed": len(failed), "method": method,
+                    "CDS_promised": promised["CDS_overall"],
+                    "CDS_delivered": got["CDS_overall"],
+                    "CDS_critical_delivered": got["CDS_critical"],
+                    "PVC": sum(1 for n in demand_nodes if pressures[n] < 7.03),
+                    "CT_ms": ct,
+                })
+    _save_csv(rows, os.path.join(RESULTS_DIR, "experiment_7.csv"))
+    print(f"  Saved experiment_7.csv ({len(rows)} rows)")
+    return rows
+
+
 def _save_csv(rows: list, path: str) -> None:
     if not rows:
         logger.warning("Empty rows for %s", path)
@@ -674,7 +764,7 @@ def write_to_db(exp_num: int, rows: list, network_name: str) -> None:
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument("--exp", type=int, required=True, choices=[1, 2, 3, 4, 5, 6])
+    parser.add_argument("--exp", type=int, required=True, choices=[1, 2, 3, 4, 5, 6, 7])
     parser.add_argument("--network", default="Net3")
     args = parser.parse_args()
 
@@ -690,6 +780,8 @@ if __name__ == "__main__":
         rows = run_exp5()
     elif args.exp == 6:
         rows = run_exp6(args.network)
+    elif args.exp == 7:
+        rows = run_exp7(args.network)
 
     # DB write after CSV
     write_to_db(args.exp, rows or [], args.network)

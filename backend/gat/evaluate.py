@@ -26,6 +26,7 @@ from backend.config import (  # noqa: E402
     RESULTS_DIR,
 )
 from backend.gat.inference import (  # noqa: E402
+    _residual_baseline,
     load_model,
     predict_pressures,
     predict_pressures_with_uncertainty,
@@ -61,7 +62,10 @@ def evaluate_model(network_name: str, mc_samples: int = 30, mc_scenarios: int = 
 
     # Naive reference: predict the mean of the *test* labels' per-node average is
     # leaky, so use the training-set mean pressure recorded in norm_stats.
-    train_mean = norm_stats["pressure_min"] + 0.5 * norm_stats["pressure_range"]
+    train_mean = norm_stats.get("abs_pressure_min", norm_stats["pressure_min"]) + 0.5 * norm_stats.get(
+        "abs_pressure_range", norm_stats["pressure_range"])
+    residual = bool(norm_stats.get("residual"))
+    intact_err = []        # |true - intact baseline|: the "assume nothing failed" reference
 
     y_true, y_pred, per_scn_mean = [], [], []
     gate_thr = MIN_PRESSURE_M + HW_SAFETY_MARGIN_M
@@ -71,6 +75,8 @@ def evaluate_model(network_name: str, mc_samples: int = 30, mc_scenarios: int = 
         true = sc["pressure_heads_m"]
         y_true.append(true)
         y_pred.append(pred)
+        if residual:
+            intact_err.append(np.abs(true - _residual_baseline(norm_stats, sc["node_ids"])))
         per_scn_mean.append(float(true.mean()))
         # Gate decision agreement, on demand nodes only (the nodes HARP serves).
         # node_features[:, 1] is demand; node_features[:, 0] is elevation(+head for sources).
@@ -115,6 +121,8 @@ def evaluate_model(network_name: str, mc_samples: int = 30, mc_scenarios: int = 
         "R2": r2,
         "naive_MAE_m": naive_mae,
         "improvement_over_naive_pct": 100.0 * (1.0 - mae / naive_mae) if naive_mae > 0 else float("nan"),
+        "residual_model": residual,
+        "intact_baseline_MAE_m": float(np.mean(np.concatenate(intact_err))) if residual else None,
         "MAE_high_impact_quartile_m": mae_hi,
         "MAE_other_m": mae_lo,
         "gate_decision_agreement": gate_agree / max(gate_n, 1),

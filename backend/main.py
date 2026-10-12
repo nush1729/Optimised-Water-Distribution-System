@@ -18,8 +18,11 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 import numpy as np
+from functools import lru_cache
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+from backend import runs, sensors
+from backend.plan import build_recovery_plan
 from backend.config import DATA_DIR, FIGURES_DIR, GENERATED_DIR, RESULTS_DIR, SNAPSHOT_HOUR, NODE_TYPE_WEIGHTS
 
 logger = logging.getLogger(__name__)
@@ -38,7 +41,23 @@ def _server_error(exc: Exception) -> HTTPException:
 # When the env var is not set (dev mode) all requests pass through.
 # ---------------------------------------------------------------------------
 _API_KEY = os.environ.get("HARP_API_KEY", "")
-_AUTH_PREFIXES = ("/simulate/", "/anomaly/detect", "/india/simulate", "/india/report")
+# Two roles. HARP_API_KEY unlocks the compute endpoints; HARP_ADMIN_KEY (which also
+# satisfies compute) is needed for operations that change shared state: priority
+# overrides, network regeneration, report generation. If only HARP_API_KEY is set
+# it guards both; if neither is set (dev mode) everything is open.
+_ADMIN_KEY = os.environ.get("HARP_ADMIN_KEY", "")
+_AUTH_PREFIXES = ("/simulate/", "/anomaly/", "/india/simulate", "/india/report", "/sensors/readings")
+
+
+def _is_admin_request(method: str, path: str) -> bool:
+    """Operations that change shared state or are expensive to repeat."""
+    return (
+        (method == "POST" and path.startswith("/india/priority/override"))
+        or (method == "DELETE" and path.startswith("/india/priority/overrides"))
+        or (method == "POST" and path.startswith("/india/wdn/") and path.endswith("/regenerate"))
+        or (method == "GET" and path == "/india/report/generate")
+    )
+
 
 # ---------------------------------------------------------------------------
 # Rate limiting — fixed-window per client IP.
@@ -50,7 +69,7 @@ _AUTH_PREFIXES = ("/simulate/", "/anomaly/detect", "/india/simulate", "/india/re
 _RL_WINDOW = 60.0  # seconds
 _RL_GENERAL = int(os.environ.get("RATE_LIMIT_GENERAL", "60"))
 _RL_COMPUTE = int(os.environ.get("RATE_LIMIT_COMPUTE", "10"))
-_COMPUTE_PREFIXES = ("/simulate/", "/anomaly/detect", "/india/simulate", "/india/report")
+_COMPUTE_PREFIXES = ("/simulate/", "/anomaly/", "/india/simulate", "/india/report", "/sensors/readings")
 
 _rate_counts: dict[str, list] = collections.defaultdict(list)  # ip → [timestamp, ...]
 
@@ -95,10 +114,21 @@ async def rate_limit_middleware(request: Request, call_next):
     return await call_next(request)
 
 
+def _key_ok(request: Request, expected: str) -> bool:
+    return bool(expected) and hmac.compare_digest(request.headers.get("X-API-Key", ""), expected)
+
+
 @app.middleware("http")
 async def api_key_middleware(request: Request, call_next):
-    if _API_KEY and any(request.url.path.startswith(p) for p in _AUTH_PREFIXES):
-        if not hmac.compare_digest(request.headers.get("X-API-Key", ""), _API_KEY):
+    path, method = request.url.path, request.method
+    is_admin = _is_admin_request(method, path)
+    is_compute = any(path.startswith(p) for p in _AUTH_PREFIXES)
+    if is_admin and (_ADMIN_KEY or _API_KEY):
+        # admin ops need the admin key; with no admin key configured the API key guards them
+        if not (_key_ok(request, _ADMIN_KEY) or (not _ADMIN_KEY and _key_ok(request, _API_KEY))):
+            return JSONResponse(status_code=401, content={"detail": "Admin key required. Pass X-API-Key header."})
+    elif is_compute and (_API_KEY or _ADMIN_KEY):
+        if not (_key_ok(request, _API_KEY) or _key_ok(request, _ADMIN_KEY)):
             return JSONResponse(status_code=401, content={"detail": "Invalid or missing API key. Pass X-API-Key header."})
     return await call_next(request)
 
@@ -124,7 +154,7 @@ app.mount("/static/figures", StaticFiles(directory=FIGURES_DIR), name="figures")
 # Persisted to SQLite so overrides survive server restarts.
 _priority_overrides: dict[str, dict[str, dict]] = {}
 
-_DB_PATH = os.path.join(os.path.dirname(__file__), "results", "harp_wdn.db")
+_DB_PATH = runs.DB_PATH   # one SQLite file: priority overrides + run history (HARP_DB_PATH overrides)
 
 
 def _db_conn() -> sqlite3.Connection:
@@ -189,6 +219,11 @@ def _delete_overrides_from_db(city: str) -> None:
 
 
 _load_overrides_from_db()
+
+try:
+    sensors.start_mqtt_listener_if_configured()
+except Exception as _exc:  # noqa: BLE001 - optional integration must not stop the API
+    logger.warning("MQTT listener not started: %s", _exc)
 
 
 # ---------------------------------------------------------------------------
@@ -338,74 +373,91 @@ def network_graph(network: str):
 # Simulation / Scenarios
 # ---------------------------------------------------------------------------
 
+def _wntr_scenario(network: str, pipe_id: str, method: str, k: int = 2) -> dict:
+    """Run one single-pipe failure on a benchmark network with the chosen method.
+
+    Delegates to experiments/runner.py's _run_no_recovery / _run_dinic / _run_harp
+    rather than reimplementing the call sequence (an earlier inline version read a
+    "demand_satisfaction" key run_simulation() never sets and called
+    predict_pressures() with the wrong signature). Raises HTTPException for bad input.
+    """
+    from backend.wntr_engine import load_network
+    from backend.gat.inference import load_model
+    from backend.experiments.runner import (
+        _run_no_recovery, _run_dinic, _run_harp, _load_priority_config,
+    )
+
+    priority_config = _load_priority_config(network)
+    wn_base = load_network(network)
+
+    if pipe_id not in wn_base.pipe_name_list:
+        raise HTTPException(status_code=400, detail=f"Unknown pipe '{pipe_id}' in network '{network}'")
+
+    if method == "none":
+        r = _run_no_recovery(wn_base, pipe_id, priority_config)
+    elif method == "dinic":
+        r = _run_dinic(wn_base, pipe_id, priority_config)
+    elif method == "harp":
+        model, norm_stats = load_model(network)
+        r = _run_harp(wn_base, pipe_id, priority_config, model, norm_stats, k=k)
+    else:
+        raise HTTPException(status_code=400, detail=f"Unknown method: {method}")
+
+    result = {
+        "network": network,
+        "pipe_id": pipe_id,
+        "method": method,
+        "pressures_m": r["pressures"],
+        "demand_satisfaction": r["demand_satisfaction"],
+        "PVC": r["PVC"],
+        "CDS": r["cds"],
+        "WLV_m3": r["WLV_m3"],
+        "computation_time_ms": r["CT_ms"],
+    }
+    if method == "harp":
+        result["escalation_flag"] = r.get("escalation_flag", False)
+        result["k_used"] = r.get("k_used", k)
+        harp_result = r.get("harp_result")
+        if harp_result is not None:
+            result["accepted_paths"] = [list(p.nodes) for p in harp_result.accepted_paths]
+            result["recovery_plan"] = build_recovery_plan(wn_base, [pipe_id], harp_result, priority_config)
+        # MC-Dropout uncertainty (20 stochastic forward passes)
+        try:
+            from backend.gat.inference import predict_pressures_with_uncertainty
+            from backend.wntr_engine import extract_graph_features, inject_failure
+            wn_fail = inject_failure(wn_base, pipe_id)
+            graph_data = extract_graph_features(
+                wn_fail, failed_pipe_id=pipe_id,
+                priority_config=priority_config, network_name=network,
+            )
+            _, std_m, _ = predict_pressures_with_uncertainty(model, norm_stats, graph_data)
+            result["pressure_uncertainty_m"] = {
+                nid: round(float(s), 3)
+                for nid, s in zip(graph_data["node_ids"], std_m)
+            }
+        except Exception as ue:  # noqa: BLE001 - uncertainty is optional, the result stands without it
+            logger.warning("Uncertainty estimation failed: %s", ue)
+    return result
+
+
+def _record_wntr_run(result: dict, kind: str, scenario: str = "burst", failed=None) -> None:
+    cds = result.get("CDS") or {}
+    runs.record_run(
+        kind=kind, network=result.get("network", ""), method=result.get("method"), scenario=scenario,
+        failed_pipes=failed if failed is not None else ([result["pipe_id"]] if result.get("pipe_id") else result.get("pipe_ids")),
+        cds_overall=cds.get("CDS_overall") if isinstance(cds, dict) else None,
+        cds_critical=cds.get("CDS_critical") if isinstance(cds, dict) else None,
+        pvc=result.get("PVC"), runtime_ms=result.get("computation_time_ms"),
+        escalated=result.get("escalation_flag"),
+    )
+
+
 @app.post("/simulate/scenario")
 def run_scenario(req: ScenarioRequest):
-    """Run a single failure scenario with chosen recovery method.
-
-    Delegates to experiments/runner.py's _run_no_recovery / _run_dinic /
-    _run_harp rather than reimplementing the call sequence here. The old
-    inline version read a "demand_satisfaction" key that run_simulation()
-    never sets (always silently defaulting to 100% satisfied) and called
-    predict_pressures() with the wrong signature (network name + a
-    "features" key that doesn't exist), which crashed the "harp" branch
-    on every request.
-    """
+    """Run a single failure scenario with chosen recovery method (recorded in /runs)."""
     try:
-        from backend.wntr_engine import load_network
-        from backend.gat.inference import load_model
-        from backend.experiments.runner import (
-            _run_no_recovery, _run_dinic, _run_harp, _load_priority_config,
-        )
-
-        priority_config = _load_priority_config(req.network)
-        wn_base = load_network(req.network)
-
-        if req.pipe_id not in wn_base.pipe_name_list:
-            raise HTTPException(status_code=400, detail=f"Unknown pipe '{req.pipe_id}' in network '{req.network}'")
-
-        if req.method == "none":
-            r = _run_no_recovery(wn_base, req.pipe_id, priority_config)
-        elif req.method == "dinic":
-            r = _run_dinic(wn_base, req.pipe_id, priority_config)
-        elif req.method == "harp":
-            model, norm_stats = load_model(req.network)
-            r = _run_harp(wn_base, req.pipe_id, priority_config, model, norm_stats, k=req.k)
-        else:
-            raise HTTPException(status_code=400, detail=f"Unknown method: {req.method}")
-
-        result = {
-            "network": req.network,
-            "pipe_id": req.pipe_id,
-            "method": req.method,
-            "pressures_m": r["pressures"],
-            "demand_satisfaction": r["demand_satisfaction"],
-            "PVC": r["PVC"],
-            "CDS": r["cds"],
-            "WLV_m3": r["WLV_m3"],
-            "computation_time_ms": r["CT_ms"],
-        }
-        if req.method == "harp":
-            result["escalation_flag"] = r.get("escalation_flag", False)
-            result["k_used"] = r.get("k_used", req.k)
-            harp_result = r.get("harp_result")
-            if harp_result is not None:
-                result["accepted_paths"] = [list(p.nodes) for p in harp_result.accepted_paths]
-            # MC-Dropout uncertainty — run 20 stochastic forward passes
-            try:
-                from backend.gat.inference import predict_pressures_with_uncertainty
-                from backend.wntr_engine import extract_graph_features, inject_failure
-                wn_fail = inject_failure(wn_base, req.pipe_id)
-                graph_data = extract_graph_features(
-                    wn_fail, failed_pipe_id=req.pipe_id,
-                    priority_config=priority_config, network_name=req.network,
-                )
-                _, std_m, _ = predict_pressures_with_uncertainty(model, norm_stats, graph_data)
-                result["pressure_uncertainty_m"] = {
-                    nid: round(float(s), 3)
-                    for nid, s in zip(graph_data["node_ids"], std_m)
-                }
-            except Exception as ue:
-                logger.warning("Uncertainty estimation failed: %s", ue)
+        result = _wntr_scenario(req.network, req.pipe_id, req.method, req.k)
+        _record_wntr_run(result, "scenario")
         return result
     except HTTPException:
         raise
@@ -614,15 +666,23 @@ def india_simulate(req: IndiaSimRequest):
         )
 
         if req.method == "none":
-            return run_simple_simulation(wdn, custom_sources=req.custom_sources or [], **sim_kwargs)
-
-        if req.method == "dinic":
-            return run_dinic_simulation(wdn, failed_pipes=fp, custom_priorities=cp, **scenario_kwargs)
-
-        if req.method == "harp":
-            return run_harp_simulation(wdn, failed_pipes=fp, custom_priorities=cp, k=req.k, **scenario_kwargs)
-
-        raise HTTPException(status_code=400, detail=f"Unknown method: {req.method}")
+            result = run_simple_simulation(wdn, custom_sources=req.custom_sources or [], **sim_kwargs)
+        elif req.method == "dinic":
+            result = run_dinic_simulation(wdn, failed_pipes=fp, custom_priorities=cp, **scenario_kwargs)
+        elif req.method == "harp":
+            result = run_harp_simulation(wdn, failed_pipes=fp, custom_priorities=cp, k=req.k, **scenario_kwargs)
+        else:
+            raise HTTPException(status_code=400, detail=f"Unknown method: {req.method}")
+        cds = result.get("CDS") or {}
+        runs.record_run(
+            kind="india", network=req.city, method=req.method, scenario=req.scenario,
+            failed_pipes=fp or ([req.leak_pipe] if req.leak_pipe else []),
+            cds_overall=cds.get("CDS_overall"), cds_critical=cds.get("CDS_critical"),
+            pvc=result.get("PVC"), runtime_ms=result.get("computation_time_ms"),
+            escalated=result.get("escalation_flag"),
+            extra={"n_nodes": req.n_nodes, "pressure_method": result.get("pressure_method")},
+        )
+        return result
     except HTTPException:
         raise
     except Exception as e:
@@ -806,7 +866,7 @@ def simulate_multi_failure(req: MultiFailRequest):
                 priority_config=priority_config, k=req.k,
             )
             cds = critical_demand_satisfaction(harp_result.demand_satisfaction, priority_config)
-            return {
+            out = {
                 "network": req.network, "pipe_ids": req.pipe_ids,
                 "method": "harp", "CDS": cds,
                 "demand_satisfaction": harp_result.demand_satisfaction,
@@ -814,20 +874,133 @@ def simulate_multi_failure(req: MultiFailRequest):
                 "PVC": pressure_violation_count(gat_pressures),
                 "computation_time_ms": harp_result.computation_time_ms,
                 "n_failed": len(req.pipe_ids),
+                "escalation_flag": harp_result.escalation_flag,
+                "recovery_plan": build_recovery_plan(wn, req.pipe_ids, harp_result, priority_config),
             }
+            _record_wntr_run(out, "multi_failure", scenario="multi_failure", failed=req.pipe_ids)
+            return out
 
         cds_base = critical_demand_satisfaction(demand_sat, priority_config)
-        return {
+        out = {
             "network": req.network, "pipe_ids": req.pipe_ids,
             "method": "none", "pressures_m": pressures,
             "demand_satisfaction": demand_sat,
             "PVC": pressure_violation_count(pressures),
             "CDS": cds_base,
         }
+        _record_wntr_run(out, "multi_failure", scenario="multi_failure", failed=req.pipe_ids)
+        return out
     except HTTPException:
         raise
     except Exception as e:
         logger.exception("Multi-failure error")
+        raise _server_error(e)
+
+
+# ---------------------------------------------------------------------------
+# Run history
+# ---------------------------------------------------------------------------
+
+@app.get("/runs")
+def list_runs(limit: int = 50, network: str = None, kind: str = None):
+    """Most recent simulation runs (newest first)."""
+    return {"runs": runs.list_runs(limit=limit, network=network, kind=kind)}
+
+
+@app.get("/runs/{run_id}")
+def get_run(run_id: int):
+    r = runs.get_run(run_id)
+    if r is None:
+        raise HTTPException(status_code=404, detail=f"Run {run_id} not found")
+    return r
+
+
+# ---------------------------------------------------------------------------
+# Sensor ingest and automatic detect -> locate -> recommend
+# ---------------------------------------------------------------------------
+
+class SensorReadings(BaseModel):
+    network: str = "Net3"
+    readings: dict[str, float]          # node id -> pressure (m)
+    ts: float | None = None
+
+
+@lru_cache(maxsize=8)
+def _network_node_ids(network: str) -> frozenset:
+    from backend.wntr_engine import load_network
+    return frozenset(load_network(network).node_name_list)
+
+
+@app.post("/sensors/readings")
+def post_sensor_readings(body: SensorReadings):
+    """Accept pressure readings from a SCADA gateway / IoT webhook (merged into the latest snapshot)."""
+    if len(body.readings) > sensors.MAX_READINGS_PER_POST:
+        raise HTTPException(status_code=413, detail="Too many readings in one request")
+    try:
+        known = _network_node_ids(body.network)
+    except FileNotFoundError:
+        raise HTTPException(status_code=404, detail=f"Unknown network '{body.network}'")
+    accepted = {n: v for n, v in body.readings.items() if n in known}
+    unknown = sorted(set(body.readings) - set(accepted))
+    snap = sensors.store_readings(body.network, accepted, body.ts)
+    return {"network": body.network, "accepted": len(accepted), "unknown_nodes": unknown[:50],
+            "nodes_with_readings": len(snap["readings"]), "ts": snap["ts"]}
+
+
+@app.get("/sensors/latest/{network}")
+def get_latest_sensor_readings(network: str):
+    snap = sensors.latest(network)
+    if snap is None:
+        raise HTTPException(status_code=404, detail=f"No readings received for '{network}' yet")
+    return {"network": network, **snap}
+
+
+class AutoRespondRequest(BaseModel):
+    network: str = "Net3"
+    pressures: dict[str, float] | None = None    # default: the latest ingested readings
+    hour: int = SNAPSHOT_HOUR
+    k: int = 2
+
+
+@app.post("/anomaly/auto_respond")
+def auto_respond(req: AutoRespondRequest):
+    """Detect an anomaly in current readings, locate the likely failed pipe, and
+    return HARP's recovery recommendation. It recommends only: a human approves
+    any valve action."""
+    try:
+        from backend.wntr_engine import load_network
+        from backend.anomaly.detector import build_baseline, detect_anomalies
+
+        pressures = req.pressures
+        if pressures is None:
+            snap = sensors.latest(req.network)
+            if snap is None:
+                raise HTTPException(status_code=400, detail="No pressures supplied and no sensor readings ingested yet")
+            pressures = snap["readings"]
+        wn = load_network(req.network)
+        baseline = build_baseline(req.network)
+        pipe_endpoints = {p: (wn.get_link(p).start_node_name, wn.get_link(p).end_node_name)
+                          for p in wn.pipe_name_list}
+        det = detect_anomalies(pressures, baseline, req.hour, pipe_endpoints=pipe_endpoints)
+        top_z = dict(sorted(det["z_scores"].items(), key=lambda kv: abs(kv[1]), reverse=True)[:10])
+        base = {"network": req.network, "hour": req.hour, "n_readings": len(pressures),
+                "anomalous_nodes": det["anomalous_nodes"], "top_z_scores": top_z,
+                "requires_operator_approval": True}
+        pipe = det["most_likely_failed_pipe"]
+        if not det["anomalous_nodes"] or pipe is None:
+            runs.record_run("auto_respond", req.network, method="detect", scenario="none")
+            return {**base, "detected": False, "suspected_pipe": None}
+        result = _wntr_scenario(req.network, pipe, "harp", req.k)
+        _record_wntr_run(result, "auto_respond", scenario="detected")
+        keep = ("CDS", "PVC", "escalation_flag", "k_used", "computation_time_ms", "recovery_plan")
+        return {**base, "detected": True, "suspected_pipe": pipe,
+                "recommendation": {k: result[k] for k in keep if k in result}}
+    except HTTPException:
+        raise
+    except FileNotFoundError as e:
+        logger.warning("Missing model/network file: %s", e)
+        raise HTTPException(status_code=404, detail="Trained model or network file not found")
+    except Exception as e:
         raise _server_error(e)
 
 

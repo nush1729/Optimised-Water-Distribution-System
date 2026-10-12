@@ -35,6 +35,21 @@ def load_model(network_name: str):
     return model, norm_stats
 
 
+def _residual_baseline(norm_stats: dict, node_ids: list):
+    """Intact-network pressure per node when the model predicts the change from it,
+    else None. Node order must match what the model was trained on."""
+    if not norm_stats.get("residual"):
+        return None
+    ids = norm_stats["baseline_node_ids"]
+    if list(node_ids) != list(ids):
+        lookup = dict(zip(ids, norm_stats["baseline"]))
+        missing = [n for n in node_ids if n not in lookup]
+        if missing:
+            raise ValueError(f"No intact baseline for nodes {missing[:3]}...")
+        return np.array([lookup[n] for n in node_ids], dtype=np.float32)
+    return np.asarray(norm_stats["baseline"], dtype=np.float32)
+
+
 def predict_pressures(
     model: PressureGAT,
     norm_stats: dict,
@@ -57,6 +72,8 @@ def predict_pressures(
     diam_max = max(norm_stats.get("diam_max", 1.0), 1e-8)
     p_min = norm_stats.get("pressure_min", 0.0)
     p_range = max(norm_stats.get("pressure_range", 1.0), 1e-8)
+    abs_min = norm_stats.get("abs_pressure_min", p_min)
+    abs_range = max(norm_stats.get("abs_pressure_range", p_range), 1e-8)
     roughness_max = max(norm_stats.get("roughness_max", 1.0), 1e-8)
     log_res_mean = norm_stats.get("log_res_mean", 0.0)
     log_res_std = max(norm_stats.get("log_res_std", 1.0), 1e-8)
@@ -89,13 +106,16 @@ def predict_pressures(
 
     # Denormalize
     pressures = out.numpy() * p_range + p_min
+    base = _residual_baseline(norm_stats, graph_data.get("node_ids", []))
+    if base is not None:
+        pressures = pressures + base
 
     # Clamp physically impossible predictions (raw model outputs outside ±2×range
     # produce pressures that violate hydraulic plausibility; they arise when
     # the network is under-represented in the training set, e.g. L-Town with
     # only 160 training scenarios).
-    p_lo = p_min - p_range
-    p_hi = p_min + 2.0 * p_range
+    p_lo = abs_min - abs_range
+    p_hi = abs_min + 2.0 * abs_range
     n_outliers = int(((pressures < p_lo) | (pressures > p_hi)).sum())
     if n_outliers > 0:
         logger.warning(
@@ -131,6 +151,8 @@ def predict_pressures_with_uncertainty(
     diam_max     = max(norm_stats.get("diam_max", 1.0), 1e-8)
     p_min        = norm_stats.get("pressure_min", 0.0)
     p_range      = max(norm_stats.get("pressure_range", 1.0), 1e-8)
+    abs_min      = norm_stats.get("abs_pressure_min", p_min)
+    abs_range    = max(norm_stats.get("abs_pressure_range", p_range), 1e-8)
     roughness_max = max(norm_stats.get("roughness_max", 1.0), 1e-8)
     log_res_mean = norm_stats.get("log_res_mean", 0.0)
     log_res_std  = max(norm_stats.get("log_res_std", 1.0), 1e-8)
@@ -158,6 +180,9 @@ def predict_pressures_with_uncertainty(
         for _ in range(n_samples):
             out = mc_model(x, edge_index, edge_attr)
             samples.append(out.numpy() * p_range + p_min)
+    base = _residual_baseline(norm_stats, graph_data.get("node_ids", []))
+    if base is not None:
+        samples = [x + base for x in samples]
     dt_ms = (time.perf_counter() - t0) * 1000.0
 
     samples    = np.stack(samples, axis=0)  # (n_samples, n_nodes)
@@ -165,8 +190,8 @@ def predict_pressures_with_uncertainty(
     std_p      = samples.std(axis=0)
 
     # Clamp mean to physical bounds
-    p_lo = p_min - p_range
-    p_hi = p_min + 2.0 * p_range
+    p_lo = abs_min - abs_range
+    p_hi = abs_min + 2.0 * abs_range
     mean_p = mean_p.clip(p_lo, p_hi)
 
     return mean_p, std_p, dt_ms
