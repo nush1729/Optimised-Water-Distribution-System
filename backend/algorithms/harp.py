@@ -388,6 +388,7 @@ class HARP:
                 break
             ptr = {n: 0 for n in G_residual.nodes}
             phase_flow = 0.0
+            n_rejected_before = len(rejected_paths)
             while True:
                 f = self._harp_dfs(
                     G_sub, G_residual, level, gat_pressures, ptr,
@@ -400,8 +401,11 @@ class HARP:
                     break
                 total_flow += f
                 phase_flow += f
-            if phase_flow <= 0:
-                break  # nothing more can be pushed (e.g. every remaining path is hydraulically infeasible)
+            # A phase that only rejected paths still made progress: each rejection
+            # retires a sink, so the next BFS can reach sinks that were hidden
+            # behind it. Stop only when nothing was pushed and nothing retired.
+            if phase_flow <= 0 and len(rejected_paths) == n_rejected_before:
+                break
 
         # demand_satisfaction was accumulated live as paths were accepted.
         for snk in sink_nodes:
