@@ -194,11 +194,14 @@ export const runIndiaSimulation = (
     return Promise.all([
       api.post("/india/simulate", { ...body, method: "harp" }).then((r) =>
         adaptSimResult(r.data, baseWDN, body.scenario ?? "normal", "harp"),
-      ).catch(() => null),
+      ),
       api.post("/india/simulate", { ...body, method: "dinic" }).then((r) =>
         adaptSimResult(r.data, baseWDN, body.scenario ?? "normal", "dinic"),
-      ).catch(() => null),
-    ]).then(([harp, dinic]) => ({ harp: harp ?? undefined, dinic: dinic ?? undefined }))
+      ),
+    ]).then(([harp, dinic]) => ({ harp, dinic }))
+    // No per-request .catch: a failure (e.g. a 429 rate limit) must reach the
+    // caller and be shown, not silently turn into "no result" and leave stale
+    // numbers on screen.
   }
   return api.post("/india/simulate", body).then((r) =>
     adaptSimResult(r.data, baseWDN, body.scenario ?? "normal", body.method),

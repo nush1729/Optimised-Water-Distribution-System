@@ -425,6 +425,7 @@ export default function IndiaMapView({ onSimComplete }: Props) {
 
     if (!backendOnline) {
       await new Promise(r => setTimeout(r, 850))
+      setError('Backend offline: the figures below are illustrative demo numbers, not real simulation results.')
       const isNormal = multiFailMode ? activeScenarios.has('normal') && activeScenarios.size === 1 : scenario === 'normal'
       const harpBase  = Math.max(10, (isNormal ? 97 : 85) - failPenalty)
       const dinicBase = Math.max(10, (isNormal ? 97 : 72) - failPenalty)

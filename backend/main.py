@@ -1,6 +1,7 @@
 """HARP-WDN FastAPI REST API."""
 import asyncio
 import collections
+import hmac
 import json
 import logging
 import math
@@ -24,6 +25,12 @@ from backend.config import DATA_DIR, FIGURES_DIR, GENERATED_DIR, RESULTS_DIR
 logger = logging.getLogger(__name__)
 
 app = FastAPI(title="HARP-WDN API", version="1.0.0")
+
+
+def _server_error(exc: Exception) -> HTTPException:
+    """Log the real exception server-side; give the client a generic 500."""
+    logger.exception("Unhandled error: %s", exc)
+    return HTTPException(status_code=500, detail="Internal server error")
 
 # ---------------------------------------------------------------------------
 # API key auth — enabled only when HARP_API_KEY env var is set.
@@ -69,6 +76,13 @@ def _check_rate_limit(ip: str, limit: int) -> bool:
 @app.middleware("http")
 async def rate_limit_middleware(request: Request, call_next):
     ip = request.client.host if request.client else "unknown"
+    # Behind a reverse proxy (Render, Vercel) every request arrives from the
+    # proxy's IP, so all users would share one rate-limit bucket. Opt in with
+    # TRUST_PROXY=1 only when a trusted proxy sets X-Forwarded-For.
+    if os.environ.get("TRUST_PROXY") == "1":
+        fwd = request.headers.get("x-forwarded-for", "")
+        if fwd:
+            ip = fwd.split(",")[0].strip() or ip
     path = request.url.path
     is_compute = any(path.startswith(p) for p in _COMPUTE_PREFIXES)
     limit = _RL_COMPUTE if is_compute else _RL_GENERAL
@@ -84,7 +98,7 @@ async def rate_limit_middleware(request: Request, call_next):
 @app.middleware("http")
 async def api_key_middleware(request: Request, call_next):
     if _API_KEY and any(request.url.path.startswith(p) for p in _AUTH_PREFIXES):
-        if request.headers.get("X-API-Key", "") != _API_KEY:
+        if not hmac.compare_digest(request.headers.get("X-API-Key", ""), _API_KEY):
             return JSONResponse(status_code=401, content={"detail": "Invalid or missing API key. Pass X-API-Key header."})
     return await call_next(request)
 
@@ -243,7 +257,7 @@ def network_info(network: str):
             "n_total_nodes": len(nodes),
         }
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        raise _server_error(e)
 
 
 @app.get("/networks/{network}/pipes")
@@ -264,7 +278,7 @@ def list_pipes(network: str):
             })
         return {"network": network, "pipes": pipes}
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        raise _server_error(e)
 
 
 @app.get("/networks/{network}/graph")
@@ -311,7 +325,7 @@ def network_graph(network: str):
 
         return {"network": network, "nodes": nodes, "edges": edges}
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        raise _server_error(e)
 
 
 # ---------------------------------------------------------------------------
@@ -390,10 +404,11 @@ def run_scenario(req: ScenarioRequest):
     except HTTPException:
         raise
     except FileNotFoundError as e:
-        raise HTTPException(status_code=404, detail=str(e))
+        logger.warning("Missing model/network file: %s", e)
+        raise HTTPException(status_code=404, detail="Trained model or network file not found")
     except Exception as e:
         logger.exception("Scenario error")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise _server_error(e)
 
 
 # ---------------------------------------------------------------------------
@@ -485,7 +500,7 @@ def detect_anomaly(req: AnomalyRequest):
     except HTTPException:
         raise
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        raise _server_error(e)
 
 
 # ---------------------------------------------------------------------------
@@ -508,7 +523,7 @@ def get_city(city_name: str):
     try:
         return fetch_city_graph(city_name, use_cache=True)
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        raise _server_error(e)
 
 
 # ---------------------------------------------------------------------------
@@ -553,7 +568,7 @@ def india_wdn(city: str, n_nodes: int = 20, regen: bool = False):
         return fetch_city_pois(city, n_nodes=n_nodes, force_regen=regen)
     except Exception as e:
         logger.exception("India WDN fetch error")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise _server_error(e)
 
 
 @app.post("/india/simulate")
@@ -606,7 +621,7 @@ def india_simulate(req: IndiaSimRequest):
         raise
     except Exception as e:
         logger.exception("India simulate error")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise _server_error(e)
 
 
 @app.post("/india/wdn/{city}/regenerate")
@@ -618,7 +633,7 @@ def india_regenerate_wdn(city: str, n_nodes: int = 20):
         wdn = fetch_city_pois(city, n_nodes=n_nodes, force_regen=True)
         return {"message": f"Regenerated WDN for {city}", "n_nodes": wdn["n_nodes"], "n_pipes": wdn["n_pipes"]}
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        raise _server_error(e)
 
 
 @app.post("/india/priority/override")
@@ -705,7 +720,7 @@ def simulate_leak(req: LeakRequest):
     except HTTPException:
         raise
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        raise _server_error(e)
 
 
 @app.post("/simulate/surge")
@@ -734,7 +749,7 @@ def simulate_surge(req: SurgeRequest):
     except HTTPException:
         raise
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        raise _server_error(e)
 
 
 @app.post("/simulate/multi_failure")
@@ -809,7 +824,7 @@ def simulate_multi_failure(req: MultiFailRequest):
         raise
     except Exception as e:
         logger.exception("Multi-failure error")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise _server_error(e)
 
 
 # ---------------------------------------------------------------------------
@@ -830,7 +845,8 @@ async def _iot_sensor_stream(city: str, n_nodes: int = 20, tick_ms: float = 2500
             return
         wdn = fetch_city_pois(city, n_nodes=n_nodes)
     except Exception as e:
-        yield f"event: error\ndata: {{\"error\": \"{str(e)}\"}}\n\n"
+        logger.warning("IoT stream setup failed for %s: %s", city, e)
+        yield 'event: error\ndata: {"error": "Could not start sensor stream"}\n\n'
         return
 
     # Per-stream entropy-seeded RNG so concurrent clients see different series.
