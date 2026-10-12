@@ -15,6 +15,11 @@ from backend.algorithms.subgraph import (
 )
 from backend.config import (
     DEFAULT_K,
+    DEFAULT_PIPE_DIAMETER_M,
+    DEFAULT_PIPE_LENGTH_M,
+    DEFAULT_PIPE_ROUGHNESS,
+    MIN_SINK_CAP_M3S,
+    SOURCE_SUPPLY_CAP_M3S,
     ESCALATION_THRESHOLD,
     GAT_Q_ESTIMATE_M3S,
     HW_DESIGN_GRADIENT,
@@ -125,7 +130,7 @@ class HARP:
         return level
 
     def _hydraulic_feasible_path(
-        self, path: list, G: nx.DiGraph, heads: dict
+        self, path: list, G: nx.DiGraph, heads: dict, flow: float = None
     ) -> tuple:
         """Terminal-pressure feasibility check for a complete source->sink path.
 
@@ -162,16 +167,19 @@ class HARP:
             if G.has_edge(u, v):
                 edata = G[u][v]
                 path_edges.append({
-                    "length": edata.get("length", 100.0),
-                    "diameter": edata.get("diameter", 0.1),
-                    "C_hw": edata.get("C_hw", 100.0),
+                    "length": edata.get("length", DEFAULT_PIPE_LENGTH_M),
+                    "diameter": edata.get("diameter", DEFAULT_PIPE_DIAMETER_M),
+                    "C_hw": edata.get("C_hw", DEFAULT_PIPE_ROUGHNESS),
                 })
         if not path_edges:
             return True, 0.0, 1.0
 
         h_supply = max(heads.get(n, 0.0) for n in real_path)
         elev_sink = G.nodes[sink].get("elevation", 0.0) if sink in G.nodes else 0.0
-        h_f = path_head_loss(path_edges, self.q_estimate)
+        # Head loss at the flow this path would actually carry; the fixed
+        # q_estimate is only the fallback when no flow is known.
+        q = flow if flow is not None and flow > 0 else self.q_estimate
+        h_f = path_head_loss(path_edges, q)
         residual_pressure = h_supply - h_f - elev_sink
         # The sink must also already be predicted to hold adequate pressure in
         # the post-failure state; a node the model says is below the service
@@ -217,7 +225,11 @@ class HARP:
             # _hydraulic_feasible_path for why this is not done per-prefix).
             margin = 0.0
             if use_hydraulic_check:
-                feasible, margin, fraction = self._hydraulic_feasible_path(current_path, G_sub, gat_pressures)
+                _snk = current_path[-2]
+                _dem = self._sink_demands.get(_snk)
+                _q = min(pushed, _dem) if _dem else pushed
+                feasible, margin, fraction = self._hydraulic_feasible_path(
+                    current_path, G_sub, gat_pressures, flow=_q)
                 if not feasible:
                     rejected_paths.append(RejectedPathRecord(
                         nodes=list(current_path),
@@ -321,9 +333,9 @@ class HARP:
         G_residual = G_sub.copy()
         for u, v in list(G_residual.edges()):
             edata = G_residual[u][v]
-            L = edata.get("length", 100.0)
-            D = edata.get("diameter", 0.1)
-            C = edata.get("C_hw", 100.0)
+            L = edata.get("length", DEFAULT_PIPE_LENGTH_M)
+            D = edata.get("diameter", DEFAULT_PIPE_DIAMETER_M)
+            C = edata.get("C_hw", DEFAULT_PIPE_ROUGHNESS)
             if use_hydraulic_check:
                 h_u = gat_pressures.get(u, 0.0)
                 h_v = gat_pressures.get(v, 0.0)
@@ -346,7 +358,7 @@ class HARP:
         # Add supersource → all source nodes
         G_residual.add_node(supersource)
         for s in source_nodes:
-            cap = 1e6  # unlimited from reservoir
+            cap = SOURCE_SUPPLY_CAP_M3S  # a reservoir is unlimited supply
             G_residual.add_edge(supersource, s, residual_cap=cap)
             G_residual.add_edge(s, supersource, residual_cap=0.0)
 
@@ -354,9 +366,9 @@ class HARP:
         G_residual.add_node(supersink)
         sink_demands = {}
         for snk in sink_nodes:
-            demand = G_sub.nodes[snk].get("base_demand", 0.001)
+            demand = G_sub.nodes[snk].get("base_demand", MIN_SINK_CAP_M3S)
             sink_demands[snk] = max(demand, 1e-9)
-            G_residual.add_edge(snk, supersink, residual_cap=max(demand, 0.001))
+            G_residual.add_edge(snk, supersink, residual_cap=max(demand, MIN_SINK_CAP_M3S))
             G_residual.add_edge(supersink, snk, residual_cap=0.0)
 
         # Initial demand satisfaction
@@ -365,7 +377,10 @@ class HARP:
 
         # Dinic's with HARP modifications
         total_flow = 0.0
-        for _ in range(50):  # max iterations
+        # Dinic's needs at most |V| BFS phases (each lengthens the shortest
+        # augmenting path by >= 1). A fixed cap of 50 silently truncated networks
+        # with deeper paths.
+        for _ in range(len(G_residual.nodes) + 1):
             level = self._bfs_level_graph(G_residual, supersource, supersink)
             if supersink not in level:
                 break

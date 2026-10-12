@@ -1,5 +1,6 @@
 """PyTorch Geometric dataset for WDN pressure prediction."""
 import json
+import logging
 import os
 import pickle
 import sys
@@ -50,7 +51,8 @@ class WDNScenarioDataset(Dataset):
         for idx in self._scenario_indices:
             try:
                 sc = self._load_scenario(idx)
-            except Exception:
+            except Exception as exc:
+                logging.getLogger(__name__).warning("Skipping unreadable scenario %s: %s", idx, exc)
                 continue
             nf = sc["node_features"]
             ef = sc["edge_features"]

@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, useCallback } from 'react'
-import { CITY_CONFIGS, CITY_LIST, generateCityWDN, type WDNNode, type WDNEdge, type WDNData } from '../cityData'
+import { CITY_CONFIGS, CITY_LIST, SOURCE_TYPES, TYPE_WEIGHT, generateCityWDN, type WDNNode, type WDNEdge, type WDNData } from '../cityData'
 import { checkHealth, getIndiaWDN } from '../api'
 import { IconDroplet, IconZap, IconNetwork } from '../icons'
 
@@ -19,10 +19,9 @@ const NODE_RADII: Record<string, number> = {
   reservoir: 14, water_tower: 12, hospital: 11, fire_station: 11,
   school: 9, college: 9, market: 8, park: 8, residential: 7, junction: 6,
 }
-const TYPE_PRIORITY_LABEL: Record<string, string> = {
-  reservoir: 'P=5.0', water_tower: 'P=4.5', hospital: 'P=4.0', fire_station: 'P=3.8',
-  school: 'P=3.2', college: 'P=2.8', market: 'P=2.5', park: 'P=1.5', residential: 'P=2.0', junction: 'P=1.0',
-}
+// Built from the (backend-synced) weights so the legend can never drift from them.
+const typePriorityLabel = (type: string) =>
+  SOURCE_TYPES.includes(type) ? 'source' : `P=${(TYPE_WEIGHT[type] ?? 1).toFixed(1)}`
 
 // Project lat/lon to normalised SVG coords (flip Y since lat goes up)
 function projectNodes(nodes: WDNNode[], W: number, H: number, pad = 60) {
@@ -257,7 +256,7 @@ export default function NetworkView({ sharedSim }: Props) {
                   <span className="legend-dot" style={{ background: NODE_COLORS[type] }} />
                   <span style={{ flex: 1, fontSize: 11 }}>{label}</span>
                   <span style={{ fontSize: 9, color: 'var(--text-3)', fontFamily: 'var(--mono)' }}>
-                    {TYPE_PRIORITY_LABEL[type]}
+                    {typePriorityLabel(type)}
                   </span>
                 </div>
               ))}

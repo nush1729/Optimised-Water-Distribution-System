@@ -197,13 +197,7 @@ def fig7_scalability():
     """Bar chart: CT_ms for Dinic's vs HARP on L-Town (log scale)."""
     path = os.path.join(RESULTS_DIR, "experiment_5.csv")
     if not os.path.exists(path):
-        print("  experiment_5.csv not found, skipping fig7")
-        # Create placeholder
-        fig, ax = plt.subplots(figsize=FIGSIZE)
-        ax.text(0.5, 0.5, "L-Town experiment not yet run", ha="center", va="center",
-                transform=ax.transAxes, fontsize=14)
-        ax.set_title("Scalability: L-Town (782 nodes)", fontsize=13)
-        _save(fig, "fig_7_scalability.png")
+        print("  experiment_5.csv not found, skipping fig7 (no placeholder figure is written)")
         return
 
     df = pd.read_csv(path)

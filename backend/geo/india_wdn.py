@@ -18,7 +18,7 @@ from collections import deque
 import numpy as np
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))
-from backend.config import GENERATED_DIR, MIN_PRESSURE_M, REQUIRED_PRESSURE_M, SEED_TRAIN
+from backend.config import GENERATED_DIR, MIN_PRESSURE_M, REQUIRED_PRESSURE_M, SEED_TRAIN, NODE_TYPE_WEIGHTS
 
 logger = logging.getLogger(__name__)
 
@@ -44,19 +44,8 @@ DEMANDS = {
     "water_tower":   0.0,
 }
 
-# Priority weights (higher = more critical)
-PRIORITY_WEIGHTS = {
-    "hospital":     5,
-    "fire_station": 4,
-    "school":       3,
-    "college":      3,
-    "market":       2,
-    "park":         1,
-    "residential":  1,
-    "junction":     1,
-    "reservoir":    0,
-    "water_tower":  0,
-}
+# Priority weights come from backend.config.NODE_TYPE_WEIGHTS (single source).
+PRIORITY_WEIGHTS = NODE_TYPE_WEIGHTS
 
 # Pipe attributes by class
 PIPE_ATTRS = {
@@ -413,7 +402,7 @@ def _connect_nodes(nodes: list, center_lat: float, max_dist_m: float = 1500, rng
                 continue
             pi = PRIORITY_WEIGHTS.get(nodes[i]["type"], 1)
             pj = PRIORITY_WEIGHTS.get(nodes[j]["type"], 1)
-            p = priority_bonus.get(max(pi, pj), 0.3) * (1 - d / max_dist_m)
+            p = priority_bonus.get(math.ceil(max(pi, pj)), 0.3) * (1 - d / max_dist_m)
             if rng.random() < p:
                 _add_edge(edges, edge_set, nodes, i, j, pipe_id, d)
                 pipe_id += 1
@@ -587,6 +576,9 @@ _DINIC_MAX_VELOCITY_MS = 1.5
 _BURST_EMITTER_COEFF_PER_AREA = 0.1
 
 
+from backend.wntr_engine import add_leak_from_emitter  # noqa: E402
+
+
 def _build_wntr_model(wdn: dict, closed_pipes: set, demand_scale: dict = None,
                        burst_pipes: set = None, leak_pipes: dict = None):
     """Build a real WNTR WaterNetworkModel from a synthetic India WDN dict.
@@ -622,7 +614,6 @@ def _build_wntr_model(wdn: dict, closed_pipes: set, demand_scale: dict = None,
     wn.options.hydraulic.minimum_pressure = MIN_PRESSURE_M
     wn.options.hydraulic.required_pressure = REQUIRED_PRESSURE_M
     wn.options.hydraulic.headloss = "H-W"
-    wn.options.hydraulic.emitter_exponent = 0.5  # standard orifice-flow exponent
 
     for n in wdn["nodes"]:
         nid = n["id"]
@@ -650,6 +641,10 @@ def _build_wntr_model(wdn: dict, closed_pipes: set, demand_scale: dict = None,
         if pid in closed_pipes or e.get("status") != "OPEN":
             wn.get_link(pid).initial_status = wntr.network.LinkStatus.Closed
 
+    # A junction can touch several failed pipes: accumulate, then add ONE leak per
+    # node (WNTRSimulator ignores node.emitter_coefficient, so real leaks are used).
+    leak_c: dict = {}
+
     def _add_emitter(pid: str, magnitude: float):
         e = edge_map.get(pid)
         if e is None or magnitude <= 0:
@@ -658,8 +653,7 @@ def _build_wntr_model(wdn: dict, closed_pipes: set, demand_scale: dict = None,
         emitter_c = magnitude * area / 2.0  # split across both ends
         for endpoint in (e["source"], e["target"]):
             if endpoint in wn.junction_name_list:
-                node = wn.get_node(endpoint)
-                node.emitter_coefficient = (node.emitter_coefficient or 0.0) + emitter_c
+                leak_c[endpoint] = leak_c.get(endpoint, 0.0) + emitter_c
 
     for pid in burst_pipes:
         _add_emitter(pid, _BURST_EMITTER_COEFF_PER_AREA)
@@ -669,6 +663,8 @@ def _build_wntr_model(wdn: dict, closed_pipes: set, demand_scale: dict = None,
         # coefficients scale down proportionally.
         scale = min(max(leak_coefficient, 0.0), 0.01) / 0.01
         _add_emitter(pid, _BURST_EMITTER_COEFF_PER_AREA * scale)
+    for _node, _c in leak_c.items():
+        add_leak_from_emitter(wn, _node, _c)
 
     return wn
 
@@ -874,7 +870,6 @@ def run_harp_simulation(
     network — same pipe, same demand, regardless of what was selected.
     """
     import time as _time
-    import types as _types
     from backend.algorithms.harp import HARP
 
     t0 = _time.perf_counter()
@@ -946,50 +941,16 @@ def run_harp_simulation(
 
     priority_config = _build_priority_config(nodes, custom_priorities)
 
-    # Step 2: mock WNTR object
-    mock_wn = _types.SimpleNamespace()
-    mock_wn.junction_name_list  = [nid for nid, n in nodes.items() if not n.get("is_source")]
-    mock_wn.reservoir_name_list = [nid for nid, n in nodes.items()
-                                   if n.get("type") in ("reservoir", "water_tower")]
-    mock_wn.tank_name_list      = []
-    mock_wn.pipe_name_list      = [e["id"] for e in wdn["edges"]]
-
-    _edge_map = {e["id"]: e for e in wdn["edges"]}
-
-    def get_node(nid):
-        n = nodes.get(nid, {})
-        obj = _types.SimpleNamespace()
-        obj.elevation    = n.get("elevation", 0)
-        obj.base_demand  = float(n.get("demand", 0) or 0) * (surge_multiplier if nid in surge_set else 1.0)
-        # HARP.run() looks up .base_head for every node in reservoir_name_list
-        # (matching real WNTR Reservoir objects, which have no .elevation at
-        # all) rather than trusting gat_pressures_dict's entry for that node.
-        # Source nodes sit at dist=0 in the synthetic head formula, so their
-        # true head is exactly HEAD_AT_SOURCE.
-        obj.base_head = _source_head.get(nid, 0.0)
-        return obj
-
-    def get_link(pid):
-        e = _edge_map.get(pid)
-        if not e:
-            raise ValueError(f"Pipe {pid} not found")
-        obj = _types.SimpleNamespace()
-        obj.start_node_name = e["source"]
-        obj.end_node_name   = e["target"]
-        obj.length          = e["length_m"]
-        diam = float(e["diameter_m"])
-        if is_leak and pid == leak_pipe:
-            # Leak: pipe stays open (routable) but its effective capacity is
-            # throttled — represented as reduced diameter, matching how
-            # Dinic's evaluation of the same scenario reduces capacity
-            # rather than excluding the pipe outright.
-            diam *= leak_capacity_factor ** 0.5  # diameter enters HW capacity to the ~2.6 power
-        obj.diameter         = diam
-        obj.roughness        = e["roughness"]
-        return obj
-
-    mock_wn.get_node = get_node
-    mock_wn.get_link = get_link
+    # Step 2: HARP reads the real WNTR model built above (junctions, reservoirs,
+    # pipes, failed pipes closed, surge already applied to demands). It used to be
+    # handed a hand-built SimpleNamespace that re-implemented the same lookups.
+    # A leak keeps the pipe open but throttles its capacity: reduce its diameter
+    # on the graph model only (the hydraulic solve above already ran).
+    if is_leak and leak_pipe in _wn_real.pipe_name_list:
+        _wn_real.get_link(leak_pipe).diameter *= leak_capacity_factor ** 0.5   # D enters HW capacity at ~2.6 power
+    if pressure_source == "distance_gradient_fallback":
+        for _s in _source_head:                      # keep heads consistent with the fallback gradient
+            _wn_real.get_node(_s).base_head = _source_head[_s]
 
     # Step 3: also need priority info on graph nodes
     # Build supplemented priority_config with weights
@@ -997,8 +958,7 @@ def run_harp_simulation(
         "hospital_nodes":      [nid for nid, n in nodes.items() if n.get("type") == "hospital"],
         "fire_station_nodes":  [nid for nid, n in nodes.items() if n.get("type") == "fire_station"],
         "school_nodes":        [nid for nid, n in nodes.items() if n.get("type") in ("school", "college")],
-        "weights": {"hospital": 5.0, "fire_station": 4.0, "school": 3.0,
-                    "residential": 1.0, "park": 0.5},
+        "weights": dict(NODE_TYPE_WEIGHTS),
     }
     if custom_priorities:
         # custom_priorities maps node_id → type_string
@@ -1012,7 +972,7 @@ def run_harp_simulation(
     try:
         harp = HARP(safety_margin_m=1.0, q_estimate=0.005)
         result = harp.run(
-            wn=mock_wn,
+            wn=_wn_real,
             failed_pipe_id=failed_pipe or "NONE",
             gat_pressures_dict=gat_pressures,
             priority_config=pc,
@@ -1061,8 +1021,7 @@ def _build_priority_config(nodes: dict, custom: dict = None) -> dict:
         "hospital_nodes":     [nid for nid, t in effective.items() if t == "hospital"],
         "fire_station_nodes": [nid for nid, t in effective.items() if t == "fire_station"],
         "school_nodes":       [nid for nid, t in effective.items() if t in ("school", "college")],
-        "weights": {"hospital": 5, "fire_station": 4, "school": 3,
-                    "residential": 1, "park": 0.5},
+        "weights": dict(NODE_TYPE_WEIGHTS),
     }
 
 

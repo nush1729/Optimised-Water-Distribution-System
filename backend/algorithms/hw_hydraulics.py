@@ -1,4 +1,5 @@
 """Hazen-Williams hydraulic calculations."""
+from backend.config import DEFAULT_PIPE_DIAMETER_M, DEFAULT_PIPE_LENGTH_M, DEFAULT_PIPE_ROUGHNESS, GAT_Q_ESTIMATE_M3S
 
 
 def hw_head_loss(Q_m3s: float, L_m: float, D_m: float, C_hw: float) -> float:
@@ -38,7 +39,7 @@ def hw_max_flow(L_m: float, D_m: float, C_hw: float, dH_m: float) -> float:
 
 def path_head_loss(
     path_edges: list,
-    Q_estimate_m3s: float = 0.005,
+    Q_estimate_m3s: float = GAT_Q_ESTIMATE_M3S,
 ) -> float:
     """
     Cumulative HW head loss along a path.
@@ -47,9 +48,9 @@ def path_head_loss(
     """
     total = 0.0
     for edge in path_edges:
-        L = edge.get("length", 100.0)
-        D = edge.get("diameter", 0.1)
-        C = edge.get("C_hw", 100.0)
+        L = edge.get("length", DEFAULT_PIPE_LENGTH_M)
+        D = edge.get("diameter", DEFAULT_PIPE_DIAMETER_M)
+        C = edge.get("C_hw", DEFAULT_PIPE_ROUGHNESS)
         if Q_estimate_m3s > 0 and D > 0 and L > 0 and C > 0:
             total += hw_head_loss(Q_estimate_m3s, L, D, C)
     return total
@@ -59,7 +60,7 @@ def path_hydraulically_feasible(
     path_edges: list,
     gat_head_source: float,
     gat_head_sink: float,
-    Q_estimate_m3s: float = 0.005,
+    Q_estimate_m3s: float = GAT_Q_ESTIMATE_M3S,
     safety_margin_m: float = 1.0,
 ) -> tuple:
     """

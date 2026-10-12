@@ -71,3 +71,7 @@ nohup.out
 .env.local
 .env.*.local
 secrets.json
+
+# Runtime SQLite database (priority overrides, experiment runs) is regenerated on start
+backend/results/harp_wdn.db
+*.db

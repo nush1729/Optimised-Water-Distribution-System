@@ -14,6 +14,8 @@ import numpy as np
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))
 from backend.config import (
+    load_priority_config,
+    SNAPSHOT_HOUR,
     DEFAULT_K,
     GENERATED_DIR,
     RESULTS_DIR,
@@ -43,9 +45,7 @@ os.makedirs(RESULTS_DIR, exist_ok=True)
 
 
 def _load_priority_config(network_name: str) -> dict:
-    cfg_path = os.path.join(os.path.dirname(__file__), "..", "data", "priority_config.json")
-    with open(cfg_path) as f:
-        return json.load(f).get(network_name, {})
+    return load_priority_config(network_name)
 
 
 def _get_base_demands(wn) -> dict:
@@ -66,7 +66,7 @@ def _run_no_recovery(wn_base, pipe_id: str, priority_config: dict) -> dict:
     else:
         pdf = sim["pressure_df"]
         ddf = sim["demand_df"]
-        t12 = min(12, len(pdf.index) - 1)
+        t12 = min(SNAPSHOT_HOUR, len(pdf.index) - 1)
         t = pdf.index[t12]
         pressures = {nid: float(pdf.at[t, nid]) for nid in pdf.columns}
         demand_satisfaction = {}

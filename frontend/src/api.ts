@@ -1,5 +1,6 @@
 import axios from "axios";
 import type { WDNData, WDNNode, WDNEdge } from "./cityData";
+import { SOURCE_TYPES, TYPE_WEIGHT } from "./cityData";
 
 // In production the frontend is served by the same FastAPI process, so use
 // relative URLs (empty string). In dev, proxy to the local backend.
@@ -9,7 +10,24 @@ const api = axios.create({ baseURL: BASE });
 
 // ── Health check ───────────────────────────────────────────────────────────
 export const checkHealth = () =>
-  api.get("/health", { timeout: 2000 }).then(() => true).catch(() => false);
+  api.get("/health", { timeout: 2000 }).then(() => { void syncPriorityWeights(); return true }).catch(() => false);
+
+// The backend owns the priority weights (backend/config.py NODE_TYPE_WEIGHTS).
+// Pull them once the backend is reachable; the constants in cityData.ts are only
+// the offline fallback. Sources keep their display-only values.
+let _weightsSynced = false
+export async function syncPriorityWeights(): Promise<void> {
+  if (_weightsSynced) return
+  try {
+    const { weights } = (await api.get("/config/priorities", { timeout: 2000 })).data as { weights: Record<string, number> }
+    for (const [type, w] of Object.entries(weights)) {
+      if (!SOURCE_TYPES.includes(type)) TYPE_WEIGHT[type] = w
+    }
+    _weightsSynced = true
+  } catch (e) {
+    console.warn("Could not load priority weights from backend; using built-in defaults", e)
+  }
+}
 
 // ── Classic WDN networks ───────────────────────────────────────────────────
 export const getNetworks   = () => api.get("/networks").then((r) => r.data);
@@ -24,10 +42,6 @@ export const detectAnomaly   = (payload: object) => api.post("/anomaly/detect", 
 
 // ── Schema adapters ────────────────────────────────────────────────────────
 // Backend uses different field names than the frontend WDNData types.
-const TYPE_WEIGHT: Record<string, number> = {
-  reservoir: 5.0, water_tower: 4.5, hospital: 4.0, fire_station: 3.8,
-  school: 3.2, college: 2.8, market: 2.5, park: 1.5, residential: 2.0, junction: 1.0,
-}
 
 function adaptNode(raw: any): WDNNode {
   return {
@@ -125,14 +139,19 @@ function adaptSimResult(
     ? (allVals.reduce((s, v) => s + v, 0) / allVals.length) * 100
     : 0
 
-  // Critical = hospitals (4.0), fire stations (3.8), reservoirs/towers
+  // Critical = hospitals and fire stations (sources are excluded: they supply
+  // water, they are not served). Prefer the backend's own CDS_critical so the
+  // UI and the API report the same number.
+  const backendCritical = raw.CDS?.CDS_critical
   const criticalIds = baseWDN.nodes
-    .filter((n) => n.priority_weight >= 3.8)
+    .filter((n) => n.type === "hospital" || n.type === "fire_station")
     .map((n) => n.id)
   const criticalVals = criticalIds.map((id) => demandMap[id] ?? 1)
-  const criticalPct  = criticalVals.length
-    ? (criticalVals.reduce((s, v) => s + v, 0) / criticalVals.length) * 100
-    : 0
+  const criticalPct  = typeof backendCritical === "number"
+    ? backendCritical * 100
+    : criticalVals.length
+      ? (criticalVals.reduce((s, v) => s + v, 0) / criticalVals.length) * 100
+      : 0
 
   const nodesWithPressure = nodes.filter((n) => n.pressure != null)
   const pressureDeficit = raw.pressure_method === "unavailable"

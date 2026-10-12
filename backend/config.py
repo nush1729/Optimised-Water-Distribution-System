@@ -45,10 +45,42 @@ NETWORK_FILES = {
     "L-Town": os.path.join(NETWORKS_DIR, "L-Town.inp"),
 }
 
-PRIORITY_WEIGHTS = {
+# Single source of truth for node-type priority weights. Everything that needs a
+# weight (HARP scoring, CDS metric, the India generator, the override API and the
+# frontend via GET /config/priorities) reads this dict. Sources (reservoir,
+# water_tower) are weight 0: they supply water, they are never served.
+NODE_TYPE_WEIGHTS = {
     "hospital": 5.0,
     "fire_station": 4.0,
     "school": 3.0,
+    "college": 3.0,
+    "market": 2.0,
     "residential": 1.0,
+    "junction": 1.0,
     "park": 0.5,
+    "reservoir": 0.0,
+    "water_tower": 0.0,
 }
+# Kept for backwards compatibility with older imports.
+PRIORITY_WEIGHTS = NODE_TYPE_WEIGHTS
+
+# Hour of the 24 h extended-period simulation used as the evaluation snapshot.
+SNAPSHOT_HOUR = 12
+
+# Numerical defaults for the flow graph (HARP / Dinic).
+DEFAULT_PIPE_LENGTH_M = 100.0
+DEFAULT_PIPE_DIAMETER_M = 0.1
+DEFAULT_PIPE_ROUGHNESS = 100.0
+SOURCE_SUPPLY_CAP_M3S = 1e6        # a reservoir is modelled as unlimited supply
+MIN_SINK_CAP_M3S = 0.001           # floor on a demand node's edge to the supersink
+
+
+def load_priority_config(network_name: str) -> dict:
+    """Priority config for a benchmark network: node lists from priority_config.json,
+    weights from NODE_TYPE_WEIGHTS (never duplicated in the JSON)."""
+    import json as _json
+    with open(os.path.join(DATA_DIR, "priority_config.json")) as f:
+        cfg = _json.load(f).get(network_name, {})
+    cfg = dict(cfg)
+    cfg["weights"] = dict(NODE_TYPE_WEIGHTS)
+    return cfg

@@ -11,5 +11,8 @@ services:
     envVars:
       - key: PYTHON_VERSION
         value: "3.11"
+      # Set to the deployed frontend origin(s) in the Render dashboard, e.g.
+      # https://harp-wdn.vercel.app (comma-separated). Left unset, only
+      # http://localhost:5173 is allowed, which is wrong for production.
       - key: ALLOWED_ORIGINS
-        value: ""
+        sync: false

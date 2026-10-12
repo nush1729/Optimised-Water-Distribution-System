@@ -20,7 +20,7 @@ from pydantic import BaseModel
 import numpy as np
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
-from backend.config import DATA_DIR, FIGURES_DIR, GENERATED_DIR, RESULTS_DIR
+from backend.config import DATA_DIR, FIGURES_DIR, GENERATED_DIR, RESULTS_DIR, SNAPSHOT_HOUR, NODE_TYPE_WEIGHTS
 
 logger = logging.getLogger(__name__)
 
@@ -219,6 +219,12 @@ def health():
 # ---------------------------------------------------------------------------
 # Networks
 # ---------------------------------------------------------------------------
+
+@app.get("/config/priorities")
+def priority_weights():
+    """Authoritative node-type priority weights (the frontend mirrors these)."""
+    return {"weights": NODE_TYPE_WEIGHTS}
+
 
 @app.get("/networks")
 def list_networks():
@@ -477,7 +483,7 @@ def detect_anomaly(req: AnomalyRequest):
             raise HTTPException(status_code=500, detail="Simulation did not converge")
 
         pdf = sim["pressure_df"]
-        hour = min(12, len(pdf.index) - 1)
+        hour = min(SNAPSHOT_HOUR, len(pdf.index) - 1)
         t = pdf.index[hour]
         pressures = {nid: float(pdf.at[t, nid]) for nid in pdf.columns}
 
@@ -639,9 +645,7 @@ def india_regenerate_wdn(city: str, n_nodes: int = 20):
 @app.post("/india/priority/override")
 def india_priority_override(req: PriorityOverrideRequest):
     """Override node type/priority — persisted to SQLite, survives restarts."""
-    TYPE_WEIGHTS = {"hospital": 5.0, "fire_station": 4.0, "school": 3.0,
-                    "residential": 1.0, "park": 0.5, "market": 2.0}
-    weight = req.new_weight if req.new_weight > 0 else TYPE_WEIGHTS.get(req.new_type, 1.0)
+    weight = req.new_weight if req.new_weight > 0 else NODE_TYPE_WEIGHTS.get(req.new_type, 1.0)
     _priority_overrides.setdefault(req.city, {})[req.node_id] = {
         "type": req.new_type,
         "weight": weight,
@@ -708,7 +712,7 @@ def simulate_leak(req: LeakRequest):
         if not sim["converged"]:
             raise HTTPException(status_code=500, detail="Simulation did not converge")
         pdf = sim["pressure_df"]
-        t = pdf.index[min(12, len(pdf.index) - 1)]
+        t = pdf.index[min(SNAPSHOT_HOUR, len(pdf.index) - 1)]
         pressures = {nid: float(pdf.at[t, nid]) for nid in pdf.columns}
         return {
             "network": req.network, "pipe_id": req.pipe_id, "scenario": "leak",
@@ -738,7 +742,7 @@ def simulate_surge(req: SurgeRequest):
         if not sim["converged"]:
             raise HTTPException(status_code=500, detail="Simulation did not converge")
         pdf = sim["pressure_df"]
-        t = pdf.index[min(12, len(pdf.index) - 1)]
+        t = pdf.index[min(SNAPSHOT_HOUR, len(pdf.index) - 1)]
         pressures = {nid: float(pdf.at[t, nid]) for nid in pdf.columns}
         return {
             "network": req.network, "node_ids": req.node_ids,
@@ -777,7 +781,7 @@ def simulate_multi_failure(req: MultiFailRequest):
             raise HTTPException(status_code=500, detail="Simulation did not converge")
 
         pdf = sim["pressure_df"]
-        t = pdf.index[min(12, len(pdf.index) - 1)]
+        t = pdf.index[min(SNAPSHOT_HOUR, len(pdf.index) - 1)]
         pressures = {nid: float(pdf.at[t, nid]) for nid in pdf.columns}
         demand_sat = compute_demand_satisfaction(wn_fail, sim)["hour_12_snapshot"]
 

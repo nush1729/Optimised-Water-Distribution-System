@@ -4,6 +4,8 @@ from collections import deque
 
 import networkx as nx
 
+from backend.config import MIN_SINK_CAP_M3S
+
 
 class FlowResult:
     def __init__(self, flow_dict, total_flow, demand_satisfaction, computation_time_ms):
@@ -108,8 +110,8 @@ class Dinic:
         for sink in sinks:
             if sink not in G.nodes:
                 continue
-            demand = G.nodes[sink].get("base_demand", 0.001)
-            cap = max(demand, 0.001)
+            demand = G.nodes[sink].get("base_demand", MIN_SINK_CAP_M3S)
+            cap = max(demand, MIN_SINK_CAP_M3S)
             if sink not in self._nbrs:
                 self._nbrs[sink] = []
             if sink not in self._graph:
@@ -140,14 +142,14 @@ class Dinic:
         for sink in sinks:
             if sink not in G.nodes:
                 continue
-            demand = G.nodes[sink].get("base_demand", 0.001)
+            demand = G.nodes[sink].get("base_demand", MIN_SINK_CAP_M3S)
             # Find flow into sink from supersink edges
             flow_to_sink = 0.0
             for i, (cap, _) in enumerate(self._graph.get(sink, [])):
                 v = self._nbrs[sink][i]
                 if v == supersink:
                     # Original cap was demand, remaining cap = demand - flow
-                    orig_cap = max(demand, 0.001)
+                    orig_cap = max(demand, MIN_SINK_CAP_M3S)
                     flow_to_sink = orig_cap - cap
             demand_satisfaction[sink] = min(flow_to_sink / max(demand, 1e-9), 1.0)
 

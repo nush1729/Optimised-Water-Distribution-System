@@ -10,8 +10,9 @@ import sys
 import numpy as np
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))
-from backend.config import GENERATED_DIR, RESULTS_DIR, SEED_TRAIN
+from backend.config import GENERATED_DIR, RESULTS_DIR, SEED_TRAIN, SNAPSHOT_HOUR, load_priority_config
 from backend.wntr_engine import (
+    scale_node_demand,
     extract_graph_features,
     inject_failure,
     load_network,
@@ -26,12 +27,7 @@ logger = logging.getLogger(__name__)
 
 
 def _load_priority_config(network_name: str) -> dict:
-    cfg_path = os.path.join(
-        os.path.dirname(__file__), "..", "data", "priority_config.json"
-    )
-    with open(cfg_path) as f:
-        all_cfg = json.load(f)
-    return all_cfg.get(network_name, {})
+    return load_priority_config(network_name)
 
 
 def _generate_chunk(network_name: str, n_scenarios: int, seed_start: int = 0) -> dict:
@@ -83,7 +79,7 @@ def _generate_chunk(network_name: str, n_scenarios: int, seed_start: int = 0) ->
         _base_sim = run_simulation(wn_base)
         if _base_sim["converged"] and _base_sim["pressure_df"] is not None:
             _bpdf = _base_sim["pressure_df"]
-            _bhour = min(12, len(_bpdf.index) - 1)
+            _bhour = min(SNAPSHOT_HOUR, len(_bpdf.index) - 1)
             _bvals = _bpdf.loc[_bpdf.index[_bhour]].values
             _baseline_pressure_min = float(np.nanmin(_bvals))
             _baseline_pressure_max = float(np.nanmax(_bvals))
@@ -129,11 +125,7 @@ def _generate_chunk(network_name: str, n_scenarios: int, seed_start: int = 0) ->
             mult = float(np.random.lognormal(mean=0, sigma=0.2))
             mult = max(0.3, min(3.0, mult))
             demand_multipliers[nid] = mult
-            node = wn.get_node(nid)
-            try:
-                node.base_demand = float(node.base_demand) * mult
-            except Exception:
-                pass
+            scale_node_demand(wn.get_node(nid), mult)
 
         # Random pipe failure
         failed_pipe_id = random.choice(eligible_pipes)
@@ -167,14 +159,14 @@ def _generate_chunk(network_name: str, n_scenarios: int, seed_start: int = 0) ->
         graph_data = extract_graph_features(
             wn_for_features,
             failed_pipe_id=failed_pipe_id,
-            demand_multipliers=demand_multipliers,
+            # no demand_multipliers: the network already carries the scaled demands
             priority_config=priority_config,
             network_name=network_name,
         )
 
         # Hour-12 pressure heads as labels
         node_ids = graph_data["node_ids"]
-        hour_12 = min(12, len(pressure_df.index) - 1)
+        hour_12 = min(SNAPSHOT_HOUR, len(pressure_df.index) - 1)
         t12 = pressure_df.index[hour_12]
         pressure_heads = np.array(
             [float(pressure_df.at[t12, nid]) if nid in pressure_df.columns else 0.0
@@ -200,7 +192,7 @@ def _generate_chunk(network_name: str, n_scenarios: int, seed_start: int = 0) ->
             if nid not in wn.junction_name_list:
                 demand_met[j] = 1.0
                 continue
-            base = float(wn.get_node(nid).base_demand) / demand_multipliers.get(nid, 1.0)
+            base = float(wn.get_node(nid).base_demand)   # already the scaled demand that was simulated
             if base <= 0:
                 demand_met[j] = 1.0
             else:

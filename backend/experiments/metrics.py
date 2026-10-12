@@ -1,4 +1,5 @@
 """Experiment metrics for HARP-WDN evaluation."""
+from backend.config import NODE_TYPE_WEIGHTS
 
 
 def critical_demand_satisfaction(
@@ -29,15 +30,15 @@ def critical_demand_satisfaction(
     for n in hospital_nodes:
         if n in demand_satisfaction:
             all_critical.append(demand_satisfaction[n])
-            all_critical_weights.append(weights.get("hospital", 5.0))
+            all_critical_weights.append(weights.get("hospital", NODE_TYPE_WEIGHTS["hospital"]))
     for n in fire_nodes:
         if n in demand_satisfaction:
             all_critical.append(demand_satisfaction[n])
-            all_critical_weights.append(weights.get("fire_station", 4.0))
+            all_critical_weights.append(weights.get("fire_station", NODE_TYPE_WEIGHTS["fire_station"]))
     for n in school_nodes:
         if n in demand_satisfaction:
             all_critical.append(demand_satisfaction[n])
-            all_critical_weights.append(weights.get("school", 3.0))
+            all_critical_weights.append(weights.get("school", NODE_TYPE_WEIGHTS["school"]))
 
     if all_critical:
         cds_critical = float(

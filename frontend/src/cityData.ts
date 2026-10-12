@@ -32,9 +32,15 @@ export const CITY_CONFIGS: Record<string, {
 }
 
 // ── Node type config ───────────────────────────────────────────────────────
-const TYPE_WEIGHT: Record<string, number> = {
-  reservoir: 5.0, water_tower: 4.5, hospital: 4.0, fire_station: 3.8,
-  school: 3.2, college: 2.8, market: 2.5, park: 1.5, residential: 2.0, junction: 1.0,
+// Mirror of backend/config.py NODE_TYPE_WEIGHTS (the backend is authoritative:
+// api.ts overwrites these from GET /config/priorities when it is reachable).
+// reservoir / water_tower are sources, not served nodes: the numbers below are
+// display-only (marker size, sort order) and are not priorities.
+export const SOURCE_TYPES = ['reservoir', 'water_tower']
+export const TYPE_WEIGHT: Record<string, number> = {
+  reservoir: 5.0, water_tower: 4.5,
+  hospital: 5.0, fire_station: 4.0, school: 3.0, college: 3.0, market: 2.0,
+  residential: 1.0, junction: 1.0, park: 0.5,
 }
 const TYPE_DEMAND: Record<string, number> = {
   reservoir: 0.0, water_tower: 0.0, hospital: 0.008, fire_station: 0.005,

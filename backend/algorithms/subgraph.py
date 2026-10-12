@@ -2,6 +2,8 @@
 import networkx as nx
 import wntr
 
+from backend.config import DEFAULT_PIPE_DIAMETER_M, DEFAULT_PIPE_LENGTH_M, DEFAULT_PIPE_ROUGHNESS
+
 
 def extract_failure_subgraph(
     G: nx.DiGraph,
@@ -121,9 +123,9 @@ def build_wdn_graph(
         if n1 not in G or n2 not in G:
             continue
         pipe_to_nodes[pid] = (n1, n2)
-        L = pipe.length or 100.0
-        D = pipe.diameter or 0.1
-        C = pipe.roughness or 100.0
+        L = pipe.length or DEFAULT_PIPE_LENGTH_M
+        D = pipe.diameter or DEFAULT_PIPE_DIAMETER_M
+        C = pipe.roughness or DEFAULT_PIPE_ROUGHNESS
         # A pipe is closed if it's the explicit failed_pipe_id argument, or if
         # the network object already carries a closed status (e.g. built from
         # inject_multi_failure()). Previously only the single failed_pipe_id

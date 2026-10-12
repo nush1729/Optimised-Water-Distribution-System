@@ -7,8 +7,10 @@ from collections import deque
 
 import numpy as np
 import wntr
+import wntr.morph  # noqa: F401  (split_pipe)
 
 from backend.config import (
+    SNAPSHOT_HOUR,
     GENERATED_DIR,
     MIN_PRESSURE_M,
     NETWORK_FILES,
@@ -16,6 +18,39 @@ from backend.config import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+LEAK_DISCHARGE_COEFF = 0.75   # orifice discharge coefficient used by WNTR's leak model
+
+
+def add_leak_from_emitter(wn, node_name: str, emitter_coefficient: float) -> None:
+    """Make `node_name` leak like an emitter Q = C * sqrt(P), in the way
+    WNTRSimulator understands.
+
+    WNTRSimulator silently ignores Junction.emitter_coefficient (that attribute
+    only exists for the EPANET solver); leaks must be added with add_leak(area,
+    discharge_coeff), Q = Cd * A * sqrt(2 g P). Equating the two gives
+    A = C / (Cd * sqrt(2 g)).
+    """
+    if emitter_coefficient <= 0:
+        return
+    area = emitter_coefficient / (LEAK_DISCHARGE_COEFF * (2.0 * 9.81) ** 0.5)
+    # start_time=0 adds a control that switches the leak on at t=0 (add_leak()
+    # alone creates it switched off, and leak_status is read-only).
+    wn.get_node(node_name).add_leak(wn, area=area, discharge_coeff=LEAK_DISCHARGE_COEFF, start_time=0)
+
+
+def scale_node_demand(node, factor: float) -> None:
+    """Multiply a junction's demand by `factor`.
+
+    In WNTR >= 1.x `Junction.base_demand` is read-only (assigning raises), so the
+    demand has to be changed on its demand timeseries. Older code assigned to
+    `base_demand` inside `try/except Exception: pass`, which silently did
+    nothing: demand surges and the demand noise used for the GAT training data
+    and the anomaly baseline were never applied.
+    """
+    for ts in node.demand_timeseries_list:
+        ts.base_value = float(ts.base_value) * factor
 
 
 def load_network(name: str) -> wntr.network.WaterNetworkModel:
@@ -140,10 +175,9 @@ def extract_graph_features(
         is_res = 1.0 if nid in wn.reservoir_name_list or nid in wn.tank_name_list else 0.0
         base_d = 0.0
         if nid in wn.junction_name_list:
-            try:
-                base_d = float(node.base_demand) * demand_multipliers.get(nid, 1.0)
-            except Exception:
-                base_d = 0.0
+            # demand_multipliers is only for callers whose network still carries the
+            # unscaled demand; the training generator scales the network itself.
+            base_d = float(node.base_demand) * demand_multipliers.get(nid, 1.0)
         ph = _get_priority_features(nid, priority_config, network_name)
         # 8th feature (proximity_to_failure) filled in below once the open-
         # edge adjacency and failed-pipe endpoints are known.
@@ -247,7 +281,7 @@ def compute_demand_satisfaction(
             by_node[nid] = ratios
 
     # Snapshot at hour 12
-    hour_12_idx = min(12, len(demand_df.index) - 1)
+    hour_12_idx = min(SNAPSHOT_HOUR, len(demand_df.index) - 1)
     snapshot = {}
     for nid in by_node:
         snapshot[nid] = by_node[nid][hour_12_idx] if hour_12_idx < len(by_node[nid]) else 0.0
@@ -270,11 +304,7 @@ def generate_baseline_distribution(
         # Apply ±10% demand noise
         for nid in wn.junction_name_list:
             node = wn.get_node(nid)
-            mult = np.random.uniform(0.9, 1.1)
-            try:
-                node.base_demand = float(node.base_demand) * mult
-            except Exception:
-                pass
+            scale_node_demand(node, np.random.uniform(0.9, 1.1))
         result = run_simulation(wn)
         if not result["converged"] or result["pressure_df"] is None:
             continue
@@ -311,34 +341,19 @@ def inject_leak(
     pipe_id: str,
     emitter_coefficient: float = 0.001,
 ) -> wntr.network.WaterNetworkModel:
-    """Pipe stays OPEN but loses flow via emitter at midpoint junction."""
+    """Pipe stays OPEN but leaks: split it at its midpoint and put an emitter there.
+
+    The leak flow is Q = C * sqrt(P) at the new midpoint junction (orifice flow),
+    so it tapers off as local pressure drops (see add_leak_from_emitter). (The previous implementation
+    assigned to Pipe.end_node_name, which WNTR 1.x no longer allows, so this
+    scenario raised on every call.)
+    """
     if pipe_id not in wn.pipe_name_list:
         raise ValueError(f"Pipe '{pipe_id}' not found")
     wn_leak = copy.deepcopy(wn)
-    pipe = wn_leak.get_link(pipe_id)
-    n1_name = pipe.start_node_name
-    n1 = wn_leak.get_node(n1_name)
     mid_name = f"_leak_{pipe_id}"
-    mid_elev = getattr(n1, "elevation", 0.0) or 0.0
-    # Add junction at midpoint with emitter demand
-    wn_leak.add_junction(
-        mid_name,
-        base_demand=emitter_coefficient,
-        elevation=mid_elev,
-    )
-    # Split pipe: shorten original, add second half
-    half_len = (pipe.length or 100.0) / 2.0
-    n2_name = pipe.end_node_name
-    pipe.end_node_name = mid_name
-    pipe.length = half_len
-    wn_leak.add_pipe(
-        f"{pipe_id}_b",
-        mid_name,
-        n2_name,
-        length=half_len,
-        diameter=pipe.diameter,
-        roughness=pipe.roughness,
-    )
+    wntr.morph.split_pipe(wn_leak, pipe_id, f"{pipe_id}_b", mid_name, return_copy=False)
+    add_leak_from_emitter(wn_leak, mid_name, emitter_coefficient)
     return wn_leak
 
 
@@ -352,10 +367,7 @@ def inject_demand_surge(
     for nid in node_ids:
         if nid in wn_surge.junction_name_list:
             node = wn_surge.get_node(nid)
-            try:
-                node.base_demand = float(node.base_demand) * multiplier
-            except Exception:
-                pass
+            scale_node_demand(node, multiplier)
     return wn_surge
 
 

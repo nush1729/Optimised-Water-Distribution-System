@@ -9,8 +9,8 @@ import sys
 import numpy as np
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))
-from backend.config import GENERATED_DIR, RESULTS_DIR, SEED_TRAIN, Z_THRESHOLD
-from backend.wntr_engine import inject_failure, load_network, run_simulation
+from backend.config import GENERATED_DIR, RESULTS_DIR, SEED_TRAIN, Z_THRESHOLD, SNAPSHOT_HOUR
+from backend.wntr_engine import inject_failure, load_network, run_simulation, scale_node_demand
 
 logger = logging.getLogger(__name__)
 
@@ -122,7 +122,7 @@ def evaluate_detector(
             continue
 
         pdf = sim["pressure_df"]
-        hour = min(12, len(pdf.index) - 1)
+        hour = min(SNAPSHOT_HOUR, len(pdf.index) - 1)
         t12 = pdf.index[hour]
         current_pressures = {
             nid: float(pdf.at[t12, nid])
@@ -175,17 +175,13 @@ def evaluate_detector(
         wn_normal = copy.deepcopy(wn_base)
         for nid in wn_normal.junction_name_list:
             node = wn_normal.get_node(nid)
-            mult = np.random.uniform(0.9, 1.1)
-            try:
-                node.base_demand = float(node.base_demand) * mult
-            except Exception:
-                pass
+            scale_node_demand(node, np.random.uniform(0.9, 1.1))
         sim = run_simulation(wn_normal)
         if not sim["converged"] or sim["pressure_df"] is None:
             continue
 
         pdf = sim["pressure_df"]
-        hour = min(12, len(pdf.index) - 1)
+        hour = min(SNAPSHOT_HOUR, len(pdf.index) - 1)
         t12 = pdf.index[hour]
         current_pressures = {
             nid: float(pdf.at[t12, nid])
