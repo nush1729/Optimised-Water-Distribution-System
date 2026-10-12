@@ -7,7 +7,7 @@ from dataclasses import dataclass, field
 import networkx as nx
 import numpy as np
 
-from backend.algorithms.hw_hydraulics import path_hydraulically_feasible, hw_max_flow
+from backend.algorithms.hw_hydraulics import hw_max_flow, path_head_loss
 from backend.algorithms.subgraph import (
     build_wdn_graph,
     escalation_needed,
@@ -17,7 +17,11 @@ from backend.config import (
     DEFAULT_K,
     ESCALATION_THRESHOLD,
     GAT_Q_ESTIMATE_M3S,
+    HW_DESIGN_GRADIENT,
     HW_SAFETY_MARGIN_M,
+    MAX_DESIGN_VELOCITY_MS,
+    MIN_PRESSURE_M,
+    REQUIRED_PRESSURE_M,
 )
 
 logger = logging.getLogger(__name__)
@@ -92,6 +96,7 @@ class HARP:
         self.safety_margin_m = safety_margin_m
         self.q_estimate = q_estimate
         self.escalation_threshold = escalation_threshold
+        self._sink_demands: dict = {}
 
     def _get_priority_score(self, path_nodes: list, G: nx.DiGraph, demand_satisfaction: dict) -> float:
         """Priority score = sum of (priority_weight × unmet_demand) for real sink nodes in path."""
@@ -120,21 +125,37 @@ class HARP:
         return level
 
     def _hydraulic_feasible_path(
-        self, path: list, G: nx.DiGraph, gat_pressures: dict
+        self, path: list, G: nx.DiGraph, heads: dict
     ) -> tuple:
-        """Check if a path from path[0] to path[-1] is hydraulically feasible.
-        Skips virtual supersource/supersink nodes in pressure evaluation.
+        """Terminal-pressure feasibility check for a complete source->sink path.
+
+        The path is feasible if the sink would still be left with at least
+        MIN_PRESSURE_M + safety_margin_m of residual pressure after paying the
+        Hazen-Williams head loss along the path:
+
+            residual = h_supply - sum(h_f) - elevation(sink)
+            feasible = min(residual, predicted_sink_pressure)
+                       >= MIN_PRESSURE_M + safety_margin_m
+
+        h_supply is the highest head found along the path. Taking the max
+        (rather than the source node's head) accounts for pump lift: in a
+        pumped network the source reservoir sits *below* the heads it feeds.
+
+        The previous gate required a head drop of >= safety_margin_m between
+        the source and every prefix of the path. That cannot hold in a
+        looped, near-equilibrium network (adjacent nodes share almost the
+        same head), so it rejected every first hop out of every source and
+        HARP delivered zero flow. Virtual supersource/supersink nodes are
+        ignored. Returns (feasible, margin_m, service_fraction), where
+        service_fraction in [0, 1] is the pressure-dependent share of demand
+        the sink can receive (0 at MIN_PRESSURE_M, 1 at REQUIRED_PRESSURE_M —
+        the same pressure-dependent-demand convention WNTR uses).
         """
-        # Filter out virtual nodes
         real_path = [n for n in path if not n.startswith("__SUPER")]
         if len(real_path) < 2:
-            return True, 0.0
+            return True, 0.0, 1.0
 
-        src = real_path[0]
-        snk = real_path[-1]
-        h_src = gat_pressures.get(src, 0.0)
-        h_snk = gat_pressures.get(snk, 0.0)
-
+        sink = real_path[-1]
         path_edges = []
         for i in range(len(real_path) - 1):
             u, v = real_path[i], real_path[i + 1]
@@ -145,14 +166,35 @@ class HARP:
                     "diameter": edata.get("diameter", 0.1),
                     "C_hw": edata.get("C_hw", 100.0),
                 })
-
         if not path_edges:
-            return True, 0.0
+            return True, 0.0, 1.0
 
-        feasible, margin = path_hydraulically_feasible(
-            path_edges, h_src, h_snk, self.q_estimate, self.safety_margin_m
-        )
-        return feasible, margin
+        h_supply = max(heads.get(n, 0.0) for n in real_path)
+        elev_sink = G.nodes[sink].get("elevation", 0.0) if sink in G.nodes else 0.0
+        h_f = path_head_loss(path_edges, self.q_estimate)
+        residual_pressure = h_supply - h_f - elev_sink
+        # The sink must also already be predicted to hold adequate pressure in
+        # the post-failure state; a node the model says is below the service
+        # minimum cannot be served at full demand just because a high-head
+        # node exists somewhere upstream on the path.
+        predicted_sink_pressure = heads.get(sink, 0.0) - elev_sink
+        pressure_eff = min(residual_pressure, predicted_sink_pressure)
+        margin = pressure_eff - MIN_PRESSURE_M - self.safety_margin_m
+        fraction = (pressure_eff - MIN_PRESSURE_M) / (REQUIRED_PRESSURE_M - MIN_PRESSURE_M)
+        return margin >= 0, margin, max(0.0, min(1.0, fraction))
+
+    @staticmethod
+    def _retire_sink(G_residual: nx.DiGraph, sink: str, supersink: str) -> None:
+        """Remove a sink's edge to the supersink from the residual graph.
+
+        Without this, a sink that cannot (or can no longer) be served keeps a
+        positive-capacity edge, so every Dinic BFS phase re-discovers it as the
+        shortest route to the supersink, the DFS rejects it again, and the
+        longer paths to the *other* sinks are never explored. Delivered demand
+        is tracked live in demand_satisfaction, not read back from this edge.
+        """
+        if G_residual.has_edge(sink, supersink):
+            G_residual[sink][supersink]["residual_cap"] = 0.0
 
     def _harp_dfs(
         self,
@@ -171,7 +213,35 @@ class HARP:
         use_hydraulic_check: bool = True,
     ) -> float:
         if u == supersink:
-            # Accept if priority score > 0
+            # Terminal hydraulic check on the complete path (see
+            # _hydraulic_feasible_path for why this is not done per-prefix).
+            margin = 0.0
+            if use_hydraulic_check:
+                feasible, margin, fraction = self._hydraulic_feasible_path(current_path, G_sub, gat_pressures)
+                if not feasible:
+                    rejected_paths.append(RejectedPathRecord(
+                        nodes=list(current_path),
+                        rejection_reason="head_loss_exceeded",
+                        head_deficit_m=abs(margin),
+                    ))
+                    self._retire_sink(G_residual, current_path[-2], supersink)
+                    return 0.0
+                # Pressure-dependent delivery: a sink below full service
+                # pressure can only receive `fraction` of its demand in total.
+                sink = current_path[-2]
+                demand = self._sink_demands.get(sink)
+                if demand:
+                    allowed = (fraction - demand_satisfaction.get(sink, 0.0)) * demand
+                    pushed = min(pushed, allowed)
+                    if pushed <= 1e-12:
+                        rejected_paths.append(RejectedPathRecord(
+                            nodes=list(current_path),
+                            rejection_reason="pressure_limited",
+                            head_deficit_m=0.0,
+                        ))
+                        self._retire_sink(G_residual, sink, supersink)
+                        return 0.0
+            # Accept only if the path still serves some unmet demand.
             score = self._get_priority_score(current_path, G_sub, demand_satisfaction)
             if score <= 0:
                 rejected_paths.append(RejectedPathRecord(
@@ -179,13 +249,21 @@ class HARP:
                     rejection_reason="no_demand_benefit",
                     head_deficit_m=0.0,
                 ))
+                self._retire_sink(G_residual, current_path[-2], supersink)
                 return 0.0
             accepted_paths.append(PathRecord(
                 nodes=list(current_path),
                 flow=pushed,
                 priority_score=score,
-                head_margin_m=0.0,
+                head_margin_m=margin,
             ))
+            # Track delivered demand live so later paths see up-to-date unmet
+            # demand (previously demand_satisfaction stayed 0 until the very
+            # end, so the score gate could never fire).
+            sink = current_path[-2]
+            demand = self._sink_demands.get(sink)
+            if demand:
+                demand_satisfaction[sink] = min(demand_satisfaction.get(sink, 0.0) + pushed / demand, 1.0)
             return pushed
 
         # Explore higher-priority neighbors first so that, when capacity is
@@ -206,20 +284,6 @@ class HARP:
             rcap = edge_data.get("residual_cap", 0)
             if rcap > 0 and level.get(v, -1) == level[u] + 1:
                 path_to_v = current_path + [v]
-                # Hydraulic check (skip for supersink edges, and entirely
-                # when use_hydraulic_check=False rather than faking flat
-                # pressures that would reject every path outright)
-                if v != supersink and use_hydraulic_check:
-                    feasible, margin = self._hydraulic_feasible_path(path_to_v, G_sub, gat_pressures)
-                    if not feasible:
-                        rejected_paths.append(RejectedPathRecord(
-                            nodes=path_to_v,
-                            rejection_reason="head_loss_exceeded",
-                            head_deficit_m=abs(margin),
-                        ))
-                        ptr[u] += 1
-                        continue
-
                 flow = self._harp_dfs(
                     G_sub, G_residual, level, gat_pressures, ptr,
                     v, supersink, min(pushed, rcap), path_to_v,
@@ -264,11 +328,13 @@ class HARP:
                 h_u = gat_pressures.get(u, 0.0)
                 h_v = gat_pressures.get(v, 0.0)
                 dH = max(h_u - h_v, 0.0)
-                # HW capacity: Q_max = (dH * C^1.852 * D^4.87 / (10.67 * L))^(1/1.852)
-                hw_cap = hw_max_flow(L, D, C, dH)
-                # Floor: allow at least diameter-based token capacity so the graph
-                # stays connected for paths that will be rejected by the feasibility check.
-                G_residual[u][v]["residual_cap"] = max(hw_cap, D * 0.001)
+                # Capacity = Hazen-Williams flow at the larger of the predicted
+                # head difference and the design gradient, capped by the
+                # maximum design velocity (see config.HW_DESIGN_GRADIENT).
+                dH_eff = max(dH, HW_DESIGN_GRADIENT * L)
+                hw_cap = hw_max_flow(L, D, C, dH_eff)
+                vel_cap = MAX_DESIGN_VELOCITY_MS * 3.141592653589793 * D * D / 4.0
+                G_residual[u][v]["residual_cap"] = max(min(hw_cap, vel_cap), D * 0.001)
             else:
                 G_residual[u][v]["residual_cap"] = D * 10.0
 
@@ -295,6 +361,7 @@ class HARP:
 
         # Initial demand satisfaction
         demand_satisfaction = {n: 0.0 for n in sink_nodes}
+        self._sink_demands = dict(sink_demands)
 
         # Dinic's with HARP modifications
         total_flow = 0.0
@@ -303,6 +370,7 @@ class HARP:
             if supersink not in level:
                 break
             ptr = {n: 0 for n in G_residual.nodes}
+            phase_flow = 0.0
             while True:
                 f = self._harp_dfs(
                     G_sub, G_residual, level, gat_pressures, ptr,
@@ -314,14 +382,13 @@ class HARP:
                 if f <= 0:
                     break
                 total_flow += f
+                phase_flow += f
+            if phase_flow <= 0:
+                break  # nothing more can be pushed (e.g. every remaining path is hydraulically infeasible)
 
-        # Compute demand satisfaction from flow allocated to each sink
+        # demand_satisfaction was accumulated live as paths were accepted.
         for snk in sink_nodes:
-            if G_residual.has_edge(snk, supersink):
-                orig_cap = sink_demands.get(snk, 0.001)
-                remaining_cap = G_residual[snk][supersink].get("residual_cap", orig_cap)
-                flow_delivered = max(orig_cap - remaining_cap, 0.0)
-                demand_satisfaction[snk] = min(flow_delivered / max(orig_cap, 1e-9), 1.0)
+            demand_satisfaction[snk] = min(max(demand_satisfaction.get(snk, 0.0), 0.0), 1.0)
 
         return demand_satisfaction, accepted_paths, rejected_paths
 

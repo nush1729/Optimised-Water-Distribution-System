@@ -896,59 +896,53 @@ def run_harp_simulation(
         surge_nodes=list(surge_set), surge_multiplier=surge_multiplier,
     )
 
-    # Build a synthetic pressure gradient for HARP's hydraulic checks, since
-    # there's no trained GAT for arbitrary India cities. The BFS simulation
-    # produces near-uniform pressures (~65 m) because demands are small →
-    # tiny dH per edge → HARP's per-edge capacity (which requires dH > 0)
-    # collapses to a near-zero floor almost everywhere.
-    #
-    # A hop-count-based gradient (previous approach: source = HEAD_AT_SOURCE,
-    # each BFS hop drops a fixed amount) fixes the "uniform pressure" problem
-    # but introduces a different one: any two nodes at the same hop-count
-    # from a source get an *exactly equal* synthetic pressure, so every edge
-    # directly connecting them has dH == 0 and collapses to the same
-    # near-zero floor anyway. In a moderately meshed graph, a large fraction
-    # of edges connect same-hop-count node pairs, so this was starving flow
-    # through a large share of legitimate, undamaged pipes.
-    #
-    # Using real cumulative *distance* (Dijkstra over pipe length_m) instead
-    # of raw hop-count almost never produces exact ties — real pipe lengths
-    # differ — so most edges get a well-defined, meaningful dH in the
-    # direction flow actually needs to travel, without discarding capacity
-    # on redundant/loop pipes that happen to sit at the same hop-count.
-    _adj: dict = {}
-    for _e in wdn["edges"]:
-        if _e["id"] in failed_set or _e.get("status") != "OPEN":
-            continue
-        _adj.setdefault(_e["source"], []).append((_e["target"], _e["length_m"]))
-        _adj.setdefault(_e["target"], []).append((_e["source"], _e["length_m"]))
-
-    _source_ids = [nid for nid, n in nodes.items() if n.get("is_source")]
-    _dist: dict = {s: 0.0 for s in _source_ids}
-    _pq = [(0.0, s) for s in _source_ids]
-    while _pq:
-        _d, _u = heapq.heappop(_pq)
-        if _d > _dist.get(_u, float("inf")):
-            continue
-        for _v, _w in _adj.get(_u, []):
-            _nd = _d + _w
-            if _nd < _dist.get(_v, float("inf")):
-                _dist[_v] = _nd
-                heapq.heappush(_pq, (_nd, _v))
-
-    HEAD_AT_SOURCE = 100.0
-    HEAD_DROP_PER_METER = 0.05
-    # HARP.run() now converts every entry in this dict from *pressure* (WNTR
-    # convention: head − elevation) to true head by adding each node's own
-    # elevation back — correct for the real GAT, which is trained on WNTR's
-    # actual pressure output. This synthetic head formula has no such
-    # convention baked in, so subtract elevation here to keep the round
-    # trip consistent: HARP will add it straight back.
-    gat_pressures = {
-        nid: max(5.0, HEAD_AT_SOURCE - _dist.get(nid, 2000.0) * HEAD_DROP_PER_METER)
-        - nodes[nid].get("elevation", 0)
-        for nid in nodes
+    # Prefer a real WNTR/EPANET steady-state solve of the failed network (same
+    # model the Dinic evaluation uses) as the pressure field HARP's hydraulic
+    # gate reads. This is *not* a trained-GAT prediction: there is no GAT for
+    # these synthetic networks. The earlier distance-gradient stand-in
+    # (100 m - 0.05 m/m * distance) is kept only as a labelled fallback for
+    # when the solve does not converge.
+    _closed = set(failed_set) | {e["id"] for e in wdn["edges"] if e.get("status") != "OPEN"}
+    _wn_real = _build_wntr_model(
+        wdn, closed_pipes=_closed,
+        demand_scale={nid: surge_multiplier for nid in surge_set},
+        burst_pipes=set(failed_set),
+        leak_pipes={leak_pipe: leak_coefficient} if is_leak else None,
+    )
+    _hyd = _run_wntr_steady_state(_wn_real)
+    _source_head = {
+        nid: float(n.get("elevation", 0.0) or 0.0) + _SOURCE_HEAD_MARGIN_M.get(n.get("type"), 30.0)
+        for nid, n in nodes.items() if n.get("is_source")
     }
+    if _hyd["converged"] and _hyd["pressure_df"] is not None:
+        _pdf = _hyd["pressure_df"]
+        _t = _pdf.index[-1]
+        gat_pressures = {nid: float(_pdf.at[_t, nid]) for nid in _pdf.columns if nid in nodes}
+        pressure_source = "wntr_steady_state"
+    else:
+        _adj: dict = {}
+        for _e in wdn["edges"]:
+            if _e["id"] in failed_set or _e.get("status") != "OPEN":
+                continue
+            _adj.setdefault(_e["source"], []).append((_e["target"], _e["length_m"]))
+            _adj.setdefault(_e["target"], []).append((_e["source"], _e["length_m"]))
+        _dist: dict = {s: 0.0 for s in _source_head}
+        _pq = [(0.0, s) for s in _source_head]
+        while _pq:
+            _d, _u = heapq.heappop(_pq)
+            if _d > _dist.get(_u, float("inf")):
+                continue
+            for _v, _w in _adj.get(_u, []):
+                _nd = _d + _w
+                if _nd < _dist.get(_v, float("inf")):
+                    _dist[_v] = _nd
+                    heapq.heappush(_pq, (_nd, _v))
+        gat_pressures = {
+            nid: max(5.0, 100.0 - _dist.get(nid, 2000.0) * 0.05) - nodes[nid].get("elevation", 0)
+            for nid in nodes
+        }
+        _source_head = {nid: 100.0 for nid in _source_head}
+        pressure_source = "distance_gradient_fallback"
 
     priority_config = _build_priority_config(nodes, custom_priorities)
 
@@ -972,7 +966,7 @@ def run_harp_simulation(
         # all) rather than trusting gat_pressures_dict's entry for that node.
         # Source nodes sit at dist=0 in the synthetic head formula, so their
         # true head is exactly HEAD_AT_SOURCE.
-        obj.base_head = HEAD_AT_SOURCE
+        obj.base_head = _source_head.get(nid, 0.0)
         return obj
 
     def get_link(pid):
@@ -1014,6 +1008,7 @@ def run_harp_simulation(
             elif ntype == "fire_station" and nid not in pc["fire_station_nodes"]:
                 pc["fire_station_nodes"].append(nid)
 
+    harp_fell_back = False
     try:
         harp = HARP(safety_margin_m=1.0, q_estimate=0.005)
         result = harp.run(
@@ -1031,6 +1026,7 @@ def run_harp_simulation(
         rejected_count = len(result.rejected_paths)
     except Exception as e:
         logger.warning("HARP failed on India WDN: %s — falling back to BFS sim", e)
+        harp_fell_back = True
         demand_sat = sim["demand_satisfaction"]
         ct = (_time.perf_counter() - t0) * 1000
         escalation = False
@@ -1042,7 +1038,8 @@ def run_harp_simulation(
         "method": "harp",
         "demand_satisfaction": demand_sat,
         "pressures_m": gat_pressures,
-        "pressure_method": "gat_prediction" if gat_pressures else "hw_bfs_heuristic",
+        "pressure_method": pressure_source,
+        "harp_fell_back_to_bfs": harp_fell_back,
         "CDS": cds,
         "PVC": sum(1 for v in demand_sat.values() if v < 0.5),
         "computation_time_ms": round(ct, 3),

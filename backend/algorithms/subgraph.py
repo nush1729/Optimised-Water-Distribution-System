@@ -136,4 +136,23 @@ def build_wdn_graph(
             G.add_edge(n1, n2, pipe_id=pid, length=L, diameter=D, C_hw=C, status=status)
             G.add_edge(n2, n1, pipe_id=pid, length=L, diameter=D, C_hw=C, status=status)
 
+    # Valves and pumps are real links that carry flow. Leaving them out splits
+    # the graph: L-Town's reservoirs R1 and R2 reach the network only through
+    # pressure-reducing valves, so with a pipes-only graph 2 of its 3 sources
+    # were disconnected and HARP could route to just 86 of 701 demand nodes.
+    # Both link types are one-way (a pump pushes start->end; a PRV does not pass
+    # reverse flow) and are modelled as short pipes for capacity purposes.
+    _pumps = list(getattr(wn, "pump_name_list", []))
+    for lid in list(getattr(wn, "valve_name_list", [])) + _pumps:
+        link = wn.get_link(lid)
+        n1, n2 = link.start_node_name, link.end_node_name
+        if n1 not in G or n2 not in G:
+            continue
+        _st = getattr(link, "initial_status", None)
+        if _st is not None and _st == wntr.network.LinkStatus.Closed:
+            continue
+        D = getattr(link, "diameter", None) or 0.3
+        G.add_edge(n1, n2, pipe_id=lid, length=1.0, diameter=D, C_hw=130.0,
+                   status="OPEN", link_type="pump" if lid in _pumps else "valve")
+
     return G, pipe_to_nodes

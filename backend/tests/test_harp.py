@@ -283,3 +283,105 @@ def test_harp_priority_scoring():
     # Both might be satisfied due to large capacity, or hospital first
     assert isinstance(result, HARPResult), "HARP should return HARPResult"
     assert result.computation_time_ms >= 0
+
+
+# ---------------------------------------------------------------------------
+# Regression tests for the hydraulic-gate / Dinic-phase fixes
+# ---------------------------------------------------------------------------
+
+_PC = {
+    "hospital_nodes": ["hospital"], "fire_station_nodes": [], "school_nodes": [],
+    "weights": {"hospital": 5.0, "fire_station": 4.0, "school": 3.0, "residential": 1.0, "park": 0.5},
+}
+
+
+def _line_network(sink_pressures: dict):
+    """reservoir(head 60) -> j1 -> hospital, and j1 -> far (a longer branch)."""
+    nodes = {
+        'res': {'elevation': 0.0, 'base_demand': 0.0, 'base_head': 60.0},
+        'j1': {'elevation': 0.0, 'base_demand': 0.0},
+        'hospital': {'elevation': 0.0, 'base_demand': 0.01},
+        'mid': {'elevation': 0.0, 'base_demand': 0.01},
+        'far': {'elevation': 0.0, 'base_demand': 0.01},
+    }
+    pipes = {
+        'p1': {'start': 'res', 'end': 'j1', 'length': 100.0, 'diameter': 0.4, 'roughness': 130.0},
+        'p2': {'start': 'j1', 'end': 'hospital', 'length': 100.0, 'diameter': 0.4, 'roughness': 130.0},
+        'p3': {'start': 'j1', 'end': 'mid', 'length': 100.0, 'diameter': 0.4, 'roughness': 130.0},
+        'p4': {'start': 'mid', 'end': 'far', 'length': 100.0, 'diameter': 0.4, 'roughness': 130.0},
+        'p_fail': {'start': 'res', 'end': 'far', 'length': 100.0, 'diameter': 0.4, 'roughness': 130.0},
+    }
+    wn = _make_mock_wn(nodes, pipes, reservoir_nodes=['res'])
+    press = {'res': 0.0, 'j1': 59.0, 'hospital': 40.0, 'mid': 40.0, 'far': 40.0}
+    press.update(sink_pressures)
+    return wn, press
+
+
+def test_gate_does_not_require_head_drop_out_of_source():
+    """Adjacent nodes at ~equal head (a normal looped/equilibrium network)
+    must not be rejected: the old per-prefix gate demanded a >=1 m head drop
+    out of every source and delivered zero flow."""
+    wn, press = _line_network({'j1': 60.0})  # j1 head == reservoir head
+    result = HARP().run(wn, 'p_fail', press, _PC, k=0, use_subgraph=False)
+    assert result.demand_satisfaction['hospital'] == pytest.approx(1.0, abs=1e-6)
+
+
+def test_low_pressure_sink_is_rejected_not_silently_served():
+    wn, press = _line_network({'hospital': 3.0})  # below MIN_PRESSURE_M + margin
+    result = HARP().run(wn, 'p_fail', press, _PC, k=0, use_subgraph=False)
+    assert result.demand_satisfaction['hospital'] == 0.0
+    assert any(r.rejection_reason == 'head_loss_exceeded' for r in result.rejected_paths)
+
+
+def test_partial_pressure_gives_partial_service():
+    """Between min and required pressure, delivery is pressure-dependent."""
+    wn, press = _line_network({'hospital': 10.6})  # ~50% of the 7.03-14.06 m band
+    result = HARP().run(wn, 'p_fail', press, _PC, k=0, use_subgraph=False)
+    assert 0.4 < result.demand_satisfaction['hospital'] < 0.6
+
+
+def test_unservable_near_sink_does_not_block_farther_sinks():
+    """A pressure-limited sink used to stay the shortest route to the
+    supersink forever, so the Dinic loop never reached sinks behind it."""
+    wn, press = _line_network({'mid': 3.0})  # 'mid' unservable, 'far' sits behind it
+    result = HARP().run(wn, 'p_fail', press, _PC, k=0, use_subgraph=False)
+    assert result.demand_satisfaction['hospital'] == pytest.approx(1.0, abs=1e-6)
+    assert result.demand_satisfaction['mid'] == 0.0
+
+
+def test_priority_gate_stops_flow_once_demand_is_met():
+    wn, press = _line_network({})
+    result = HARP().run(wn, 'p_fail', press, _PC, k=0, use_subgraph=False)
+    for sink in ('hospital', 'mid'):
+        assert result.demand_satisfaction[sink] <= 1.0 + 1e-9
+
+
+def test_graph_includes_valves_and_pumps_so_sources_stay_connected():
+    """L-Town's reservoirs reach the network only through pressure-reducing
+    valves. A pipes-only graph left them disconnected, so HARP could route to
+    only 86 of 701 demand nodes (21.7% delivery) even with the hydraulic gate off."""
+    nodes = {
+        'res': {'elevation': 0.0, 'base_demand': 0.0, 'base_head': 60.0},
+        'a': {'elevation': 0.0, 'base_demand': 0.0},
+        'b': {'elevation': 0.0, 'base_demand': 0.01},
+        'c': {'elevation': 0.0, 'base_demand': 0.01},
+    }
+    links = {
+        'p1': {'start': 'res', 'end': 'a', 'length': 100.0, 'diameter': 0.3, 'roughness': 130.0},
+        'v1': {'start': 'a', 'end': 'b', 'length': 1.0, 'diameter': 0.3, 'roughness': 130.0},
+        'pump1': {'start': 'b', 'end': 'c', 'length': 1.0, 'diameter': 0.3, 'roughness': 130.0},
+    }
+    wn = _make_mock_wn(nodes, links, reservoir_nodes=['res'])
+    wn.pipe_name_list = ['p1']
+    wn.valve_name_list = ['v1']
+    wn.pump_name_list = ['pump1']
+
+    G, _ = build_wdn_graph(wn, None, _PC)
+    assert G.has_edge('a', 'b') and not G.has_edge('b', 'a')   # valve: one-way
+    assert G.has_edge('b', 'c') and not G.has_edge('c', 'b')   # pump: one-way
+    assert G['a']['b']['link_type'] == 'valve' and G['b']['c']['link_type'] == 'pump'
+
+    press = {'res': 0.0, 'a': 55.0, 'b': 50.0, 'c': 45.0}
+    result = HARP().run(wn, 'NONE', press, _PC, k=0, use_subgraph=False)
+    assert result.demand_satisfaction['b'] == pytest.approx(1.0, abs=1e-6)
+    assert result.demand_satisfaction['c'] == pytest.approx(1.0, abs=1e-6)
