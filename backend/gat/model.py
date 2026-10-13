@@ -16,7 +16,7 @@ class PressureGAT(nn.Module):
     changes 2 of ~234 directed edges (a ~0.85% perturbation) and 3 rounds of
     message passing alone struggled to propagate that sparse edge bit to the
     rest of the graph (see backend/wntr_engine.py:extract_graph_features).
-    ~91K parameters (91,329 with 10 node inputs; an earlier note said ~180K, which was wrong).
+    ~91K parameters (91,329 with 10 node inputs).
     """
 
     def __init__(self, node_in: int = 8, edge_dim: int = 6, dropout: float = 0.1):

@@ -148,6 +148,7 @@ input, select, textarea { font-family: var(--font); }
   font-family: var(--font) !important;
 }
 [data-theme="dark"] .leaflet-container { background: #0a1828; }
+.osm-dark-tiles { filter: invert(1) hue-rotate(180deg) brightness(0.9) contrast(0.9); }
 .leaflet-tooltip {
   background: var(--surface) !important;
   border: 1px solid var(--border) !important;

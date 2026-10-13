@@ -461,7 +461,7 @@ export default function ResultsView({ sharedSim }: Props) {
                     })}
                     <div style={{ marginTop: 12, padding: '10px 14px', background: 'var(--cyan-dim)', borderRadius: 'var(--r)', color: 'var(--cyan)', fontSize: 12, fontWeight: 600 }}>
                       {hStats!.served_demand_pct > dStats!.served_demand_pct
-                        ? `HARP serves ${(hStats!.served_demand_pct - dStats!.served_demand_pct).toFixed(1)}% more demand — GAT pressure awareness gives a significant advantage over Dinic's baseline.`
+                        ? `HARP serves ${(hStats!.served_demand_pct - dStats!.served_demand_pct).toFixed(1)}% more demand — its hydraulic feasibility gate avoids allocations the network cannot sustain, which Dinic's baseline does not check.`
                         : hStats!.served_demand_pct === dStats!.served_demand_pct
                           ? 'Both algorithms achieve the same demand satisfaction on this scenario.'
                           : `Dinic's outperforms HARP by ${(dStats!.served_demand_pct - hStats!.served_demand_pct).toFixed(1)}% — consider adjusting the GAT model parameters.`}
