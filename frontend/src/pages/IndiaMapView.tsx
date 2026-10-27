@@ -1031,11 +1031,11 @@ export default function IndiaMapView({ onSimComplete }: Props) {
 
         <MapContainer center={[20.5937, 78.9629]} zoom={5}
           style={{ width: '100%', height: '100%' }} zoomControl>
-          {/* CARTO's free basemap tiles now require an API key (they return a placeholder tile),
-              so use OpenStreetMap's standard tiles, which need none. */}
+          {/* OpenStreetMap's volunteer tile servers rate-limit and block hosted apps, and CARTO's
+              free tiles now need a key. Esri's World Street Map tiles load without a key. */}
           <TileLayer
-            url="https://tile.openstreetmap.org/{z}/{x}/{y}.png"
-            attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'
+            url="https://server.arcgisonline.com/ArcGIS/rest/services/World_Street_Map/MapServer/tile/{z}/{y}/{x}"
+            attribution='Tiles &copy; Esri &mdash; Source: Esri, HERE, Garmin, OpenStreetMap contributors'
             className={isDark ? 'osm-dark-tiles' : undefined}
           />
           {flyTarget && <MapFlyTo center={flyTarget.center} zoom={flyTarget.zoom} />}
