@@ -9,8 +9,20 @@ const BASE = import.meta.env.VITE_API_BASE_URL ?? (import.meta.env.PROD ? "" : "
 const api = axios.create({ baseURL: BASE });
 
 // ── Health check ───────────────────────────────────────────────────────────
-export const checkHealth = () =>
-  api.get("/health", { timeout: 2000 }).then(() => { void syncPriorityWeights(); return true }).catch(() => false);
+// Hosted free tiers sleep when idle and can take a while to wake, so allow 8 s
+// and retry once before falling back to the offline demo.
+export const checkHealth = async (): Promise<boolean> => {
+  for (let attempt = 0; attempt < 2; attempt++) {
+    try {
+      await api.get("/health", { timeout: 8000 })
+      void syncPriorityWeights()
+      return true
+    } catch {
+      /* retry once */
+    }
+  }
+  return false
+}
 
 // The backend owns the priority weights (backend/config.py NODE_TYPE_WEIGHTS).
 // Pull them once the backend is reachable; the constants in cityData.ts are only
