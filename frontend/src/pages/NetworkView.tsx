@@ -112,6 +112,8 @@ export default function NetworkView({ sharedSim }: Props) {
       setSelectedCity(sharedSim.city)
       setNNodes(sharedSim.wdn.n_nodes)
     }
+    // Only preload when the shared result changes; re-running on selectedCity would fight the city picker.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [sharedSim])
 
   // Pan / zoom
@@ -219,10 +221,10 @@ export default function NetworkView({ sharedSim }: Props) {
                 { id: 'priority', label: 'Priority Weight' },
                 { id: 'pressure', label: 'Pressure (if simulated)', disabled: simNodes.length === 0 },
               ] as const).map(m => (
-                <label key={m.id} style={{ display: 'flex', alignItems: 'center', gap: 7, fontSize: 12, cursor: (m as any).disabled ? 'not-allowed' : 'pointer', opacity: (m as any).disabled ? 0.45 : 1 }}>
+                <label key={m.id} style={{ display: 'flex', alignItems: 'center', gap: 7, fontSize: 12, cursor: (m as { disabled?: boolean }).disabled ? 'not-allowed' : 'pointer', opacity: (m as { disabled?: boolean }).disabled ? 0.45 : 1 }}>
                   <input type="radio" name="colorMode" value={m.id}
-                    checked={colorMode === m.id} disabled={(m as any).disabled}
-                    onChange={() => setColorMode(m.id as any)}
+                    checked={colorMode === m.id} disabled={(m as { disabled?: boolean }).disabled}
+                    onChange={() => setColorMode(m.id as 'type' | 'priority' | 'pressure')}
                     style={{ accentColor: 'var(--cyan)' }} />
                   {m.label}
                 </label>

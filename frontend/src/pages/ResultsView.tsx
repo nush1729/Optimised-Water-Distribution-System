@@ -108,8 +108,8 @@ export default function ResultsView({ sharedSim }: Props) {
               <span style={{ fontSize: 11, color: 'var(--text-3)' }}>{m.label}</span>
               <span style={{
                 fontSize: 13, fontWeight: 700,
-                fontFamily: (m as any).mono ? 'var(--mono)' : undefined,
-                color: (m as any).mono ? 'var(--cyan)'
+                fontFamily: (m as { mono?: boolean }).mono ? 'var(--mono)' : undefined,
+                color: (m as { mono?: boolean }).mono ? 'var(--cyan)'
                   : m.value >= 80 ? 'var(--green)' : m.value >= 50 ? 'var(--amber)' : 'var(--red)',
               }}>
                 {m.value.toFixed(1)}{m.suffix}
@@ -185,11 +185,11 @@ export default function ResultsView({ sharedSim }: Props) {
                 ].filter(m => m.value != null).map(m => (
                   <div key={m.label} className="kpi">
                     <div className="kpi-label">{m.label}</div>
-                    <div className={`kpi-value ${(m as any).time ? 'info' : m.value! >= m.good! ? 'good' : m.value! >= m.warn! ? 'warn' : 'bad'}`}
-                      style={{ fontFamily: (m as any).time ? 'var(--mono)' : undefined }}>
+                    <div className={`kpi-value ${(m as { time?: boolean }).time ? 'info' : m.value! >= m.good! ? 'good' : m.value! >= m.warn! ? 'warn' : 'bad'}`}
+                      style={{ fontFamily: (m as { time?: boolean }).time ? 'var(--mono)' : undefined }}>
                       {m.value!.toFixed(1)}{m.suffix}
                     </div>
-                    {!(m as any).time && (
+                    {!(m as { time?: boolean }).time && (
                       <div className="progress">
                         <div className={`progress-fill ${m.value! >= m.good! ? 'good' : m.value! >= m.warn! ? 'warn' : 'bad'}`}
                           style={{ width: `${Math.min(m.value!, 100)}%` }} />
@@ -412,11 +412,11 @@ export default function ResultsView({ sharedSim }: Props) {
                         ].filter(m => m.value != null).map(m => (
                           <div key={m.label} className="kpi" style={{ padding: 0 }}>
                             <div className="kpi-label">{m.label}</div>
-                            <div className={`kpi-value ${(m as any).time ? 'info' : m.value! >= 80 ? 'good' : m.value! >= 50 ? 'warn' : 'bad'}`}
-                              style={{ fontFamily: (m as any).time ? 'var(--mono)' : undefined, fontSize: 20 }}>
+                            <div className={`kpi-value ${(m as { time?: boolean }).time ? 'info' : m.value! >= 80 ? 'good' : m.value! >= 50 ? 'warn' : 'bad'}`}
+                              style={{ fontFamily: (m as { time?: boolean }).time ? 'var(--mono)' : undefined, fontSize: 20 }}>
                               {m.value!.toFixed(1)}{m.suffix}
                             </div>
-                            {!(m as any).time && (
+                            {!(m as { time?: boolean }).time && (
                               <div className="progress">
                                 <div className={`progress-fill ${m.value! >= 80 ? 'good' : m.value! >= 50 ? 'warn' : 'bad'}`}
                                   style={{ width: `${Math.min(m.value!, 100)}%` }} />

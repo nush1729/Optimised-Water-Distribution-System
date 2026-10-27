@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from 'react'
-import { checkHealth, listRuns, type RunRecord } from '../api'
+import { checkHealth, listRuns, type RunRecord, errorDetail } from '../api'
 
 const pct = (v: number | null | undefined) => (v == null ? '-' : `${(v * 100).toFixed(1)}%`)
 
@@ -17,8 +17,8 @@ export default function HistoryView() {
       setOnline(up)
       if (!up) { setRuns([]); return }
       setRuns(await listRuns(100, kind || undefined))
-    } catch (e: any) {
-      setError(e?.response?.data?.detail ?? 'Could not load run history')
+    } catch (e) {
+      setError(errorDetail(e, 'Could not load run history'))
     }
   }, [kind])
 

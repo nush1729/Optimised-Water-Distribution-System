@@ -54,6 +54,7 @@ export const listRuns = (limit = 100, kind?: string): Promise<RunRecord[]> =>
 // ── Schema adapters ────────────────────────────────────────────────────────
 // Backend uses different field names than the frontend WDNData types.
 
+// eslint-disable-next-line @typescript-eslint/no-explicit-any -- untyped backend JSON
 function adaptNode(raw: any): WDNNode {
   return {
     id:              raw.id,
@@ -67,6 +68,7 @@ function adaptNode(raw: any): WDNNode {
   }
 }
 
+// eslint-disable-next-line @typescript-eslint/no-explicit-any -- untyped backend JSON
 function adaptEdge(raw: any): WDNEdge {
   return {
     id:       raw.id,
@@ -79,6 +81,7 @@ function adaptEdge(raw: any): WDNEdge {
   }
 }
 
+// eslint-disable-next-line @typescript-eslint/no-explicit-any -- untyped backend JSON
 function adaptWDNData(raw: any): WDNData {
   const nodes: WDNNode[] = (raw.nodes ?? []).map(adaptNode)
   const edges: WDNEdge[] = (raw.edges ?? []).map(adaptEdge)
@@ -107,6 +110,7 @@ export interface SimResult {
 }
 
 function adaptSimResult(
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any -- untyped backend JSON
   raw: any,
   baseWDN: WDNData,
   scenario: string,
@@ -197,7 +201,7 @@ export const getIndiaCities = () =>
     const d = r.data
     // Backend returns { cities: [{city, name, ...}] }
     const arr = Array.isArray(d) ? d : (d.cities ?? d)
-    return Array.isArray(arr) ? arr.map((c: any) => (typeof c === "string" ? c : c.city)) : []
+    return Array.isArray(arr) ? arr.map((c: string | { city: string }) => (typeof c === "string" ? c : c.city)) : []
   })
 
 export const getIndiaWDN = (city: string, n_nodes = 20, regen = false): Promise<WDNData> =>
@@ -243,3 +247,12 @@ export interface PriorityOverrideRequest {
 }
 export const overrideNodePriority = (body: PriorityOverrideRequest) =>
   api.post("/india/priority/override", body).then((r) => r.data)
+
+
+/** Best-effort message from an axios-style error without using `any`. */
+export function errorDetail(e: unknown, fallback: string): string {
+  const err = e as { response?: { data?: { detail?: unknown } }; message?: string } | undefined
+  const d = err?.response?.data?.detail
+  if (typeof d === 'string') return d
+  return err?.message ?? fallback
+}

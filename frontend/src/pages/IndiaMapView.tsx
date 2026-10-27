@@ -7,8 +7,7 @@ import {
 } from '../cityData'
 import {
   checkHealth, getIndiaWDN, runIndiaSimulation, overrideNodePriority,
-  type IndiaSimRequest, type ScenarioType, type IndiaSimMethod, type SimResult,
-} from '../api'
+  type IndiaSimRequest, type ScenarioType, type IndiaSimMethod, type SimResult, errorDetail } from '../api'
 import {
   IconCheck, IconPipeBreak, IconDroplets, IconTrendingUp, IconAlertTriangle,
   IconSettings, IconLayers, IconBarChart, IconRefresh, IconPlay,
@@ -186,7 +185,8 @@ function IotSensorPanel({ nodes, failedPipes, tick, simResult, livePressures, li
 // Map fly-to helper component
 function MapFlyTo({ center, zoom }: { center: [number, number]; zoom: number }) {
   const map = useMap()
-  useEffect(() => { map.flyTo(center, zoom, { duration: 1.2 }) }, [center[0], center[1], zoom])
+  const lat = center[0], lng = center[1]
+  useEffect(() => { map.flyTo([lat, lng], zoom, { duration: 1.2 }) }, [map, lat, lng, zoom])
   return null
 }
 
@@ -456,8 +456,8 @@ export default function IndiaMapView({ onSimComplete }: Props) {
           if (method === 'harp')  hr = sr
           if (method === 'dinic') dr = sr
         }
-      } catch (e: any) {
-        setError(e?.response?.data?.detail ?? 'Simulation failed')
+      } catch (e) {
+        setError(errorDetail(e, 'Simulation failed'))
         setSimLoading(false); return
       }
     }
@@ -491,7 +491,7 @@ export default function IndiaMapView({ onSimComplete }: Props) {
           ? { ...n, type: overrideType, priority_weight: overrideWeight } : n),
       } : prev)
       setSelectedNode(null)
-    } catch (e: any) { setError(e?.response?.data?.detail ?? 'Override failed') }
+    } catch (e) { setError(errorDetail(e, 'Override failed')) }
   }
 
   const togglePipe = (pid: string) =>
