@@ -132,7 +132,16 @@ def fetch_city_pois(city: str, n_nodes: int = 20, force_regen: bool = False) -> 
             ("park",         {"leisure": "park"}),
             ("market",       {"amenity": ["marketplace", "food_court"]}),
         ]
+        # Overpass can hang for minutes on a small host. Cap each request and the
+        # whole fetch so the API answers (with the synthetic fallback) in bounded time.
+        ox.settings.requests_timeout = 8
+        ox.settings.timeout = 8
+        _deadline = time.monotonic() + 25.0
         for ptype, tags in _osmnx_fetch:
+            if time.monotonic() > _deadline:
+                logger.warning("OSMnx budget exhausted for %s; %s skipped", city, ptype)
+                pois_by_type[ptype] = []
+                continue
             time.sleep(0.3)  # rate-limit guard
             try:
                 gdf = ox.features_from_point((lat, lon), dist=r, tags=tags)
